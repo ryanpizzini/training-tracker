@@ -70,11 +70,11 @@ function calcBMR({peso,altezza,eta,sesso}){
   return Math.round(10*p + 6.25*h - 5*e + (sesso==="F"?-161:5));
 }
 
-// ── Defaults ── (valori calcolati per Ryan: 77kg 180cm 18a M, recomp -400 kcal)
+// ── Defaults ── (valori per Ryan: 77kg→74.5kg entro 31 ago, deficit -450 kcal)
 const DEF_S = {
   peso:77, altezza:180, eta:18, sesso:"M", apiKey:"",
   pesoConfermato:false, giorniProgrammati:[0,1,3,4],
-  kcalTarget:2400, proteineTarget:162, grassiTarget:69, carboTarget:284,
+  kcalTarget:2350, proteineTarget:160, grassiTarget:68, carboTarget:274,
 };
 const DEF = { sessions:[], meals:[], settings:DEF_S };
 
@@ -195,10 +195,10 @@ function SettingsModal({settings,onSave,onExport,onImport,onClose}){
   const [eta,setEta]=useState(settings.eta??18);
   const [sesso,setSesso]=useState(settings.sesso||"M");
   const [apiKey,setApiKey]=useState(settings.apiKey||"");
-  const [kcalT,setKcalT]=useState(settings.kcalTarget??2400);
-  const [protT,setProtT]=useState(settings.proteineTarget??162);
-  const [grassiT,setGrassiT]=useState(settings.grassiTarget??69);
-  const [carboT,setCarboT]=useState(settings.carboTarget??284);
+  const [kcalT,setKcalT]=useState(settings.kcalTarget??2350);
+  const [protT,setProtT]=useState(settings.proteineTarget??160);
+  const [grassiT,setGrassiT]=useState(settings.grassiTarget??68);
+  const [carboT,setCarboT]=useState(settings.carboTarget??274);
   const [giorni,setGiorni]=useState(settings.giorniProgrammati);
   const toggle=i=>setGiorni(g=>g.includes(i)?g.filter(x=>x!==i):[...g,i].sort());
   const bmrV=calcBMR({peso,altezza:alt,eta,sesso});
@@ -288,8 +288,8 @@ function SettingsModal({settings,onSave,onExport,onImport,onClose}){
       <Btn primary onClick={()=>onSave({
         peso:Number(peso)||77, altezza:Number(alt)||180, eta:Number(eta)||18, sesso,
         apiKey:apiKey.trim(), pesoConfermato:true,
-        kcalTarget:Number(kcalT)||2400,
-        proteineTarget:Number(protT)||162, grassiTarget:Number(grassiT)||69, carboTarget:Number(carboT)||284,
+        kcalTarget:Number(kcalT)||2350,
+        proteineTarget:Number(protT)||160, grassiTarget:Number(grassiT)||68, carboTarget:Number(carboT)||274,
         giorniProgrammati:giorni,
       })}>Salva</Btn>
     </div>
