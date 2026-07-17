@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Training Tracker</title>
+
+<!-- Aggiunta a schermata Home: iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Training" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230F1013'/%3E%3Ccircle cx='50' cy='50' r='30' fill='none' stroke='%23B9E07E' stroke-width='7'/%3E%3Ccircle cx='50' cy='50' r='10' fill='%235B9BFF'/%3E%3C/svg%3E" />
+
+<!-- PWA (Android / Chrome) -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0F1013" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230F1013'/%3E%3Ccircle cx='50' cy='50' r='30' fill='none' stroke='%23B9E07E' stroke-width='7'/%3E%3Ccircle cx='50' cy='50' r='10' fill='%235B9BFF'/%3E%3C/svg%3E" />
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  html, body { margin: 0; padding: 0; background: #0F1013; overscroll-behavior-y: none; }
+  * { -webkit-tap-highlight-color: transparent; }
+  input, textarea, button { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+// ─────────────────────────────────────────────────────────────
+// Training Tracker — boxe, palestra, corsa (versione standalone)
+// Calorie: automatiche (MET × peso × durata), modificabili a mano
+// Dati salvati in localStorage sul dispositivo.
+// ─────────────────────────────────────────────────────────────
+
+const STORAGE_KEY = "training-tracker:v1";
+
+const SPORTS = {
+  boxe:     { label: "Boxe",     color: "#5B9BFF", met: 9.5 },
+  palestra: { label: "Palestra", color: "#4CC57A", met: 5.0 },
+  corsa:    { label: "Corsa",    color: "#FF6B9D", met: 9.8 },
+};
+
+const GIORNI = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+const MESI = ["Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno","Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"];
+const MESI_SHORT = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"];
+
+const dowMon = (d) => (d.getDay() + 6) % 7;
+const fmt = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const parseDate = (s) => {
+  const [y, m, g] = s.split("-").map(Number);
+  return new Date(y, m - 1, g);
+};
+
+function autoCalorie(sport, durata, distanza, peso) {
+  const min = Number(durata) || 0;
+  const kg = Number(peso) || 0;
+  if (!min || !kg) return 0;
+  let met = SPORTS[sport]?.met ?? 6;
+  if (sport === "corsa" && Number(distanza) > 0) {
+    const vel = Number(distanza) / (min / 60);
+    met = Math.max(6, Math.min(14.5, vel * 0.97));
+  }
+  return Math.round(met * kg * (min / 60));
+}
+
+function bmr({ peso, altezza, eta, sesso }) {
+  const p = Number(peso) || 0, h = Number(altezza) || 0, e = Number(eta) || 0;
+  if (!p || !h || !e) return 0;
+  return Math.round(10 * p + 6.25 * h - 5 * e + (sesso === "F" ? -161 : 5));
+}
+
+// ── Storage (localStorage — dati locali su questo dispositivo) ─
+const DEFAULT_DATA = {
+  sessions: [],
+  meals: [],
+  settings: { peso: 75, altezza: 180, eta: 18, sesso: "M", pesoConfermato: false, giorniProgrammati: [0, 1, 3, 4] },
+};
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        sessions: parsed.sessions || [],
+        meals: parsed.meals || [],
+        settings: { ...DEFAULT_DATA.settings, ...(parsed.settings || {}) },
+      };
+    }
+  } catch (e) { /* nessun dato salvato ancora */ }
+  return DEFAULT_DATA;
+}
+
+function saveData(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
+  catch (e) { console.error("Salvataggio non riuscito", e); }
+}
+
+// ── UI di base ───────────────────────────────────────────────
+const S = {
+  bg: "#0F1013", card: "#17181D", cardHi: "#1D1E25", border: "#26272E",
+  text: "#ECEDEF", muted: "#8A8D97", faint: "#5A5D66",
+  allenato: "#B9E07E", saltato: "#F0A9A9",
+};
+
+function Btn({ children, onClick, active, primary, small, style, title }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        background: primary ? S.text : active ? S.cardHi : "transparent",
+        color: primary ? "#101014" : S.text,
+        border: `1px solid ${active || primary ? S.text + "33" : S.border}`,
+        borderRadius: 10,
+        padding: small ? "5px 10px" : "9px 16px",
+        fontSize: small ? 13 : 14.5,
+        fontWeight: primary ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        transition: "background .15s, border-color .15s",
+        ...style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label style={{ display: "block", marginBottom: 14 }}>
+      <div style={{ fontSize: 12.5, color: S.muted, marginBottom: 6, letterSpacing: .3 }}>{label}</div>
+      {children}
+    </label>
+  );
+}
+
+const inputStyle = {
+  width: "100%", boxSizing: "border-box",
+  background: S.bg, color: S.text,
+  border: `1px solid ${S.border}`, borderRadius: 10,
+  padding: "10px 12px", fontSize: 15, fontFamily: "inherit", outline: "none",
+};
+
+function Modal({ title, onClose, children }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,.6)",
+        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: S.card, border: `1px solid ${S.border}`, borderRadius: 16,
+          width: "100%", maxWidth: 420, maxHeight: "90vh", overflowY: "auto", padding: 22,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>{title}</h2>
+          <button onClick={onClose} aria-label="Chiudi"
+            style={{ background: "none", border: "none", color: S.muted, fontSize: 22, cursor: "pointer", lineHeight: 1 }}>×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── Modale sessione ──────────────────────────────────────────
+function SessionModal({ initial, peso, onSave, onDelete, onClose }) {
+  const [sport, setSport] = useState(initial.sport || "boxe");
+  const [date, setDate] = useState(initial.date);
+  const [durata, setDurata] = useState(initial.durata ?? 60);
+  const [distanza, setDistanza] = useState(initial.distanza ?? "");
+  const [note, setNote] = useState(initial.note || "");
+  const [manual, setManual] = useState(!!initial.calorieManual);
+  const [calorie, setCalorie] = useState(
+    initial.calorie ?? autoCalorie(initial.sport || "boxe", initial.durata ?? 60, initial.distanza, peso)
+  );
+
+  const auto = autoCalorie(sport, durata, distanza, peso);
+  useEffect(() => { if (!manual) setCalorie(auto); }, [auto, manual]);
+
+  const salva = () => {
+    if (!date || !Number(durata)) return;
+    onSave({
+      id: initial.id || `s_${Date.now()}`,
+      date, sport,
+      durata: Number(durata),
+      distanza: sport === "corsa" && distanza !== "" ? Number(distanza) : null,
+      calorie: Number(calorie) || 0,
+      calorieManual: manual,
+      note: note.trim(),
+    });
+  };
+
+  return (
+    <Modal title={initial.id ? "Modifica allenamento" : "Nuovo allenamento"} onClose={onClose}>
+      <Field label="Sport">
+        <div style={{ display: "flex", gap: 8 }}>
+          {Object.entries(SPORTS).map(([k, v]) => (
+            <button key={k} onClick={() => setSport(k)}
+              style={{
+                flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+                fontSize: 14, fontWeight: 600,
+                background: sport === k ? v.color + "26" : "transparent",
+                color: sport === k ? v.color : S.muted,
+                border: `1px solid ${sport === k ? v.color : S.border}`,
+              }}>
+              {v.label}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Data">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="Durata (min)">
+          <input type="number" min="1" value={durata} onChange={(e) => setDurata(e.target.value)} style={inputStyle} />
+        </Field>
+      </div>
+
+      {sport === "corsa" && (
+        <Field label="Distanza (km)">
+          <input type="number" min="0" step="0.1" value={distanza}
+            onChange={(e) => setDistanza(e.target.value)} style={inputStyle}
+            placeholder="es. 8.5 — usata per stimare l'intensità" />
+        </Field>
+      )}
+
+      <Field label={manual ? "Calorie (manuale)" : "Calorie (calcolo automatico)"}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input type="number" min="0" value={calorie}
+            onChange={(e) => { setCalorie(e.target.value); setManual(true); }}
+            style={{ ...inputStyle, borderColor: manual ? "#C9A24B" : S.border }} />
+          {manual && (
+            <Btn small onClick={() => { setManual(false); setCalorie(auto); }} title="Torna al calcolo automatico">
+              ↺ Auto
+            </Btn>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: S.faint, marginTop: 5 }}>
+          Stima automatica: {auto} kcal (MET × {peso} kg × durata)
+        </div>
+      </Field>
+
+      <Field label="Note">
+        <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)}
+          style={{ ...inputStyle, resize: "vertical" }} placeholder="es. sparring, gambe, fartlek…" />
+      </Field>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+        {initial.id
+          ? <Btn onClick={() => onDelete(initial.id)} style={{ color: "#E77" }}>Elimina</Btn>
+          : <span />}
+        <Btn primary onClick={salva}>Salva</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Modale impostazioni ──────────────────────────────────────
+function SettingsModal({ settings, onSave, onClose }) {
+  const [peso, setPeso] = useState(settings.peso);
+  const [altezza, setAltezza] = useState(settings.altezza ?? 180);
+  const [eta, setEta] = useState(settings.eta ?? 18);
+  const [sesso, setSesso] = useState(settings.sesso || "M");
+  const [giorni, setGiorni] = useState(settings.giorniProgrammati);
+  const toggle = (i) =>
+    setGiorni((g) => (g.includes(i) ? g.filter((x) => x !== i) : [...g, i].sort()));
+
+  const anteprima = bmr({ peso, altezza, eta, sesso });
+
+  return (
+    <Modal title="Impostazioni" onClose={onClose}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Peso (kg)">
+          <input type="number" min="30" max="200" value={peso}
+            onChange={(e) => setPeso(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="Altezza (cm)">
+          <input type="number" min="100" max="230" value={altezza}
+            onChange={(e) => setAltezza(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="Età">
+          <input type="number" min="10" max="100" value={eta}
+            onChange={(e) => setEta(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="Sesso">
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["M", "M"], ["F", "F"]].map(([k, l]) => (
+              <button key={k} onClick={() => setSesso(k)}
+                style={{
+                  flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+                  fontSize: 14, fontWeight: 600,
+                  background: sesso === k ? S.text : "transparent",
+                  color: sesso === k ? "#101014" : S.muted,
+                  border: `1px solid ${sesso === k ? S.text : S.border}`,
+                }}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </Field>
+      </div>
+      <div style={{ fontSize: 12.5, color: S.faint, margin: "-4px 0 14px" }}>
+        Metabolismo basale stimato: {anteprima} kcal/giorno (Mifflin-St Jeor) — usato per le calorie a riposo.
+      </div>
+      <Field label="Giorni di allenamento programmati">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {GIORNI.map((g, i) => (
+            <button key={g} onClick={() => toggle(i)}
+              style={{
+                padding: "8px 12px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+                fontSize: 13.5, fontWeight: 600,
+                background: giorni.includes(i) ? S.text : "transparent",
+                color: giorni.includes(i) ? "#101014" : S.muted,
+                border: `1px solid ${giorni.includes(i) ? S.text : S.border}`,
+              }}>
+              {g}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 12, color: S.faint, marginTop: 6 }}>
+          Nei giorni programmati senza allenamento il calendario segna "Saltato".
+        </div>
+      </Field>
+      <div style={{ textAlign: "right" }}>
+        <Btn primary onClick={() => onSave({
+          peso: Number(peso) || 75,
+          altezza: Number(altezza) || 180,
+          eta: Number(eta) || 18,
+          sesso,
+          pesoConfermato: true,
+          giorniProgrammati: giorni,
+        })}>
+          Salva
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Vista Mese ───────────────────────────────────────────────
+function MonthView({ anno, mese, sessions, settings, selected, onSelect, oggi }) {
+  const first = new Date(anno, mese, 1);
+  const startPad = dowMon(first);
+  const nGiorni = new Date(anno, mese + 1, 0).getDate();
+  const byDate = useMemo(() => {
+    const m = {};
+    for (const s of sessions) (m[s.date] ||= []).push(s);
+    return m;
+  }, [sessions]);
+
+  const cells = [];
+  for (let i = 0; i < startPad; i++) {
+    const d = new Date(anno, mese, i - startPad + 1);
+    cells.push({ date: d, out: true });
+  }
+  for (let g = 1; g <= nGiorni; g++) cells.push({ date: new Date(anno, mese, g), out: false });
+
+  const progLabel = settings.giorniProgrammati.map((i) => GIORNI[i].toLowerCase()).join("/");
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12.5, color: S.muted, marginBottom: 12 }}>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: S.allenato, marginRight: 6 }} />Allenato</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: S.saltato, marginRight: 6 }} />Saltato ({progLabel})</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, border: `1px solid ${S.border}`, marginRight: 6 }} />Giorno libero</span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 12 }}>
+          {Object.values(SPORTS).map((sp) => (
+            <span key={sp.label}><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: sp.color, marginRight: 5 }} />{sp.label}</span>
+          ))}
+        </span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6 }}>
+        {GIORNI.map((g) => (
+          <div key={g} style={{ textAlign: "center", fontSize: 12, color: S.faint, padding: "4px 0" }}>{g}</div>
+        ))}
+        {cells.map(({ date, out }, i) => {
+          const key = fmt(date);
+          const sess = byDate[key] || [];
+          const trained = sess.length > 0;
+          const scheduled = settings.giorniProgrammati.includes(dowMon(date));
+          const past = key < fmt(oggi);
+          const skipped = !out && scheduled && past && !trained;
+          const isToday = key === fmt(oggi);
+          const isSel = key === selected;
+
+          let bg = "transparent", fg = out ? S.faint : S.text, border = S.border;
+          if (!out && trained) { bg = S.allenato; fg = "#20240F"; border = S.allenato; }
+          else if (skipped) { bg = S.saltato; fg = "#3A1414"; border = S.saltato; }
+          if (isSel) border = "#6FA3FF";
+          return (
+            <button key={i} onClick={() => !out && onSelect(key)}
+              style={{
+                minHeight: 56, borderRadius: 10, padding: "6px 8px", textAlign: "left",
+                background: bg, color: fg, cursor: out ? "default" : "pointer", fontFamily: "inherit",
+                border: `${isToday || isSel ? 2 : 1}px solid ${isToday && !isSel ? "#3D66B8" : border}`,
+                opacity: out ? 0.35 : 1,
+              }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{date.getDate()}</div>
+              <div style={{ display: "flex", gap: 3, marginTop: 5, flexWrap: "wrap" }}>
+                {sess.map((s) => (
+                  <span key={s.id} style={{ width: 7, height: 7, borderRadius: 7, background: SPORTS[s.sport].color }} />
+                ))}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Dettaglio giorno ─────────────────────────────────────────
+function DayDetail({ dateKey, sessions, onAdd, onEdit }) {
+  const list = sessions.filter((s) => s.date === dateKey);
+  const d = parseDate(dateKey);
+  return (
+    <div style={{ marginTop: 20, borderTop: `1px solid ${S.border}`, paddingTop: 16 }}>
+      <div style={{ fontSize: 13.5, color: S.muted, marginBottom: 10 }}>
+        {GIORNI[dowMon(d)]} {d.getDate()} {MESI[d.getMonth()].toLowerCase()}
+      </div>
+      {list.length === 0 ? (
+        <div style={{ color: S.muted, fontSize: 14.5 }}>
+          Nessun allenamento.{" "}
+          <button onClick={onAdd} style={{ background: "none", border: "none", color: "#6FA3FF", cursor: "pointer", fontSize: 14.5, fontFamily: "inherit", padding: 0 }}>
+            Aggiungi +
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {list.map((s) => (
+            <button key={s.id} onClick={() => onEdit(s)}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, textAlign: "left",
+                background: S.cardHi, border: `1px solid ${S.border}`, borderRadius: 12,
+                padding: "10px 14px", cursor: "pointer", color: S.text, fontFamily: "inherit",
+              }}>
+              <span style={{ width: 10, height: 10, borderRadius: 10, background: SPORTS[s.sport].color, flexShrink: 0 }} />
+              <span style={{ fontWeight: 600, minWidth: 74 }}>{SPORTS[s.sport].label}</span>
+              <span style={{ color: S.muted, fontSize: 14 }}>
+                {s.durata} min{s.distanza ? ` · ${s.distanza} km` : ""} · {s.calorie} kcal{s.calorieManual ? " ✎" : ""}
+              </span>
+              {s.note && <span style={{ color: S.faint, fontSize: 13, marginLeft: "auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>{s.note}</span>}
+            </button>
+          ))}
+          <div>
+            <button onClick={onAdd} style={{ background: "none", border: "none", color: "#6FA3FF", cursor: "pointer", fontSize: 14, fontFamily: "inherit", padding: 0 }}>
+              Aggiungi un altro +
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Vista Anno (heatmap) ─────────────────────────────────────
+function YearView({ anno, sessions, onSelectDay }) {
+  const minutesByDate = useMemo(() => {
+    const m = {};
+    for (const s of sessions) {
+      if (s.date.startsWith(String(anno))) m[s.date] = (m[s.date] || 0) + s.durata;
+    }
+    return m;
+  }, [sessions, anno]);
+
+  const start = new Date(anno, 0, 1);
+  const gridStart = new Date(start);
+  gridStart.setDate(start.getDate() - dowMon(start));
+  const weeks = [];
+  const cur = new Date(gridStart);
+  while (cur.getFullYear() <= anno) {
+    const col = [];
+    for (let r = 0; r < 7; r++) { col.push(new Date(cur)); cur.setDate(cur.getDate() + 1); }
+    weeks.push(col);
+    if (col[0].getFullYear() > anno) break;
+  }
+  const shade = (min) => {
+    if (!min) return S.cardHi;
+    if (min < 40) return "#3E5230";
+    if (min < 75) return "#6B8A44";
+    if (min < 110) return "#94BC5F";
+    return S.allenato;
+  };
+  const totMin = Object.values(minutesByDate).reduce((a, b) => a + b, 0);
+
+  return (
+    <div>
+      <div style={{ fontSize: 13.5, color: S.muted, marginBottom: 12 }}>
+        {Object.keys(minutesByDate).length} giorni allenati · {Math.round(totMin / 60 * 10) / 10} ore totali nel {anno}
+      </div>
+      <div style={{ overflowX: "auto", paddingBottom: 6 }}>
+        <div style={{ display: "flex", gap: 3 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, marginRight: 4 }}>
+            {GIORNI.map((g, i) => (
+              <div key={g} style={{ height: 13, fontSize: 9.5, color: S.faint, lineHeight: "13px" }}>
+                {i % 2 === 0 ? g : ""}
+              </div>
+            ))}
+          </div>
+          {weeks.map((col, wi) => (
+            <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {col.map((d, di) => {
+                const inYear = d.getFullYear() === anno;
+                const key = fmt(d);
+                const min = minutesByDate[key];
+                return (
+                  <div key={di}
+                    onClick={() => inYear && onSelectDay(key)}
+                    title={inYear ? `${d.getDate()} ${MESI_SHORT[d.getMonth()]}${min ? ` · ${min} min` : ""}` : ""}
+                    style={{
+                      width: 13, height: 13, borderRadius: 3,
+                      background: inYear ? shade(min) : "transparent",
+                      cursor: inYear && min ? "pointer" : "default",
+                    }} />
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 3, marginTop: 6, marginLeft: 34 }}>
+          {weeks.map((col, wi) => {
+            const d = col[0];
+            const prev = wi > 0 ? weeks[wi - 1][0] : null;
+            const show = d.getFullYear() === anno && (!prev || prev.getMonth() !== d.getMonth());
+            return <div key={wi} style={{ width: 13, fontSize: 9.5, color: S.faint, overflow: "visible", whiteSpace: "nowrap" }}>{show ? MESI_SHORT[d.getMonth()] : ""}</div>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Vista Statistiche ────────────────────────────────────────
+function StatsView({ anno, sessions, oggi }) {
+  const yearSessions = sessions.filter((s) => s.date.startsWith(String(anno)));
+  const tot = (arr, f) => arr.reduce((a, s) => a + f(s), 0);
+  const ore = (arr) => Math.round(tot(arr, (s) => s.durata) / 60 * 10) / 10;
+
+  const perSport = Object.keys(SPORTS).map((k) => {
+    const arr = yearSessions.filter((s) => s.sport === k);
+    return { k, n: arr.length, ore: ore(arr), kcal: tot(arr, (s) => s.calorie), km: tot(arr, (s) => s.distanza || 0) };
+  });
+  const maxOre = Math.max(1, ...perSport.map((p) => p.ore));
+
+  const weeks = [];
+  const monday = new Date(oggi);
+  monday.setDate(monday.getDate() - dowMon(oggi));
+  for (let w = 7; w >= 0; w--) {
+    const s = new Date(monday); s.setDate(s.getDate() - w * 7);
+    const e = new Date(s); e.setDate(e.getDate() + 6);
+    const inW = sessions.filter((x) => x.date >= fmt(s) && x.date <= fmt(e));
+    weeks.push({ label: `${s.getDate()}/${s.getMonth() + 1}`, min: tot(inW, (x) => x.durata), kcal: tot(inW, (x) => x.calorie) });
+  }
+  const maxMin = Math.max(1, ...weeks.map((w) => w.min));
+
+  const box = { background: S.cardHi, border: `1px solid ${S.border}`, borderRadius: 14, padding: 16 };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+        {[
+          ["Sessioni", yearSessions.length],
+          ["Ore totali", ore(yearSessions)],
+          ["Calorie", tot(yearSessions, (s) => s.calorie).toLocaleString("it-CH")],
+          ["Km di corsa", Math.round(tot(yearSessions, (s) => s.distanza || 0) * 10) / 10],
+        ].map(([l, v]) => (
+          <div key={l} style={box}>
+            <div style={{ fontSize: 26, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+            <div style={{ fontSize: 12.5, color: S.muted, marginTop: 2 }}>{l} · {anno}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={box}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Per sport — {anno}</div>
+        {perSport.map((p) => (
+          <div key={p.k} style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, marginBottom: 5 }}>
+              <span style={{ color: SPORTS[p.k].color, fontWeight: 600 }}>{SPORTS[p.k].label}</span>
+              <span style={{ color: S.muted }}>
+                {p.n} sess. · {p.ore} h · {p.kcal.toLocaleString("it-CH")} kcal{p.k === "corsa" && p.km ? ` · ${Math.round(p.km * 10) / 10} km` : ""}
+              </span>
+            </div>
+            <div style={{ height: 8, background: S.bg, borderRadius: 8 }}>
+              <div style={{ height: 8, width: `${(p.ore / maxOre) * 100}%`, background: SPORTS[p.k].color, borderRadius: 8, transition: "width .3s" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={box}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Ultime 8 settimane (minuti)</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 120 }}>
+          {weeks.map((w, i) => (
+            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, height: "100%", justifyContent: "flex-end" }}>
+              <div style={{ fontSize: 10.5, color: S.muted, fontVariantNumeric: "tabular-nums" }}>{w.min || ""}</div>
+              <div style={{
+                width: "100%", maxWidth: 34, borderRadius: "6px 6px 2px 2px",
+                height: `${(w.min / maxMin) * 80}%`, minHeight: w.min ? 4 : 2,
+                background: w.min ? "#94BC5F" : S.border,
+              }} title={`${w.min} min · ${w.kcal} kcal`} />
+              <div style={{ fontSize: 10, color: S.faint }}>{w.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Vista Cibo (diario alimentare — stima manuale) ───────────
+// Nota: la stima via API Claude richiede una chiave API server-side.
+// In questa versione standalone le kcal si inseriscono direttamente;
+// resta comunque tutto il resto (bilancio, riposo, allenamento).
+function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal, onDeleteMeal }) {
+  const [testo, setTesto] = useState("");
+  const [kcalInput, setKcalInput] = useState("");
+
+  const dayMeals = meals.filter((m) => m.date === dateKey);
+  const assunte = dayMeals.reduce((a, m) => a + (Number(m.kcal) || 0), 0);
+  const allenamento = sessions.filter((s) => s.date === dateKey).reduce((a, s) => a + (s.calorie || 0), 0);
+  const riposo = bmr(settings);
+  const bruciateTot = riposo + allenamento;
+
+  const salva = () => {
+    if (!testo.trim()) return;
+    onSaveMeal({ id: `m_${Date.now()}`, date: dateKey, testo: testo.trim(), kcal: Number(kcalInput) || 0, voci: [] });
+    setTesto(""); setKcalInput("");
+  };
+
+  const box = { background: S.cardHi, border: `1px solid ${S.border}`, borderRadius: 14, padding: 16 };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
+        {[
+          ["Assunte", assunte, S.saltato],
+          ["Riposo (metabolismo)", riposo, "#7CC5C0"],
+          ["Allenamento", allenamento, S.allenato],
+          ["Bilancio", assunte - bruciateTot, S.text],
+        ].map(([l, v, c]) => (
+          <div key={l} style={box}>
+            <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: c }}>
+              {Number(v).toLocaleString("it-CH")}
+            </div>
+            <div style={{ fontSize: 11.5, color: S.muted, marginTop: 2 }}>{l} · kcal</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 12, color: S.faint, marginTop: -6 }}>
+        Bilancio = assunte − (riposo + allenamento). Il riposo è il metabolismo basale giornaliero calcolato da peso, altezza, età e sesso in ⚙.
+      </div>
+
+      <div style={box}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Aggiungi un pasto</div>
+        <textarea rows={2} value={testo} onChange={(e) => setTesto(e.target.value)}
+          style={{ ...inputStyle, resize: "vertical" }}
+          placeholder="Cosa hai mangiato — es. pasta al pomodoro con parmigiano" />
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+          <input type="number" min="0" value={kcalInput} onChange={(e) => setKcalInput(e.target.value)}
+            style={{ ...inputStyle, width: 110 }} placeholder="kcal" />
+          <Btn primary onClick={salva}>Salva pasto</Btn>
+        </div>
+        <div style={{ fontSize: 11.5, color: S.faint, marginTop: 8 }}>
+          In questa versione le kcal si inseriscono a mano (la stima automatica via AI è disponibile nella versione dentro Claude).
+        </div>
+      </div>
+
+      <div style={box}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Pasti del giorno</div>
+        {dayMeals.length === 0 ? (
+          <div style={{ fontSize: 14, color: S.muted }}>Nessun pasto registrato.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {dayMeals.map((m) => (
+              <div key={m.id} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                background: S.bg, border: `1px solid ${S.border}`, borderRadius: 12, padding: "8px 12px",
+              }}>
+                <span style={{ flex: 1, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={m.testo}>{m.testo}</span>
+                <input type="number" min="0" value={m.kcal}
+                  onChange={(e) => onUpdateMeal(m.id, e.target.value)}
+                  style={{ ...inputStyle, width: 90, padding: "6px 8px", fontSize: 14 }} />
+                <span style={{ fontSize: 12.5, color: S.muted }}>kcal</span>
+                <button onClick={() => onDeleteMeal(m.id)} aria-label="Elimina pasto"
+                  style={{ background: "none", border: "none", color: S.faint, fontSize: 18, cursor: "pointer", padding: 2 }}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── App ──────────────────────────────────────────────────────
+function TrainingTracker() {
+  const oggi = new Date();
+  const [data, setData] = useState(() => loadData());
+  const [view, setView] = useState("mese");
+  const [anno, setAnno] = useState(oggi.getFullYear());
+  const [mese, setMese] = useState(oggi.getMonth());
+  const [selected, setSelected] = useState(fmt(oggi));
+  const [modal, setModal] = useState(null);
+
+  useEffect(() => { saveData(data); }, [data]);
+
+  const upsert = useCallback((sess) => {
+    setData((d) => ({
+      ...d,
+      sessions: [...d.sessions.filter((s) => s.id !== sess.id), sess].sort((a, b) => a.date.localeCompare(b.date)),
+    }));
+    setSelected(sess.date);
+    const dd = parseDate(sess.date);
+    setAnno(dd.getFullYear()); setMese(dd.getMonth());
+    setModal(null);
+  }, []);
+
+  const remove = useCallback((id) => {
+    setData((d) => ({ ...d, sessions: d.sessions.filter((s) => s.id !== id) }));
+    setModal(null);
+  }, []);
+
+  const saveMeal = useCallback((meal) => {
+    setData((d) => ({ ...d, meals: [...(d.meals || []).filter((m) => m.id !== meal.id), meal] }));
+  }, []);
+  const updateMeal = useCallback((id, kcal) => {
+    setData((d) => ({ ...d, meals: (d.meals || []).map((m) => (m.id === id ? { ...m, kcal: Number(kcal) || 0 } : m)) }));
+  }, []);
+  const deleteMeal = useCallback((id) => {
+    setData((d) => ({ ...d, meals: (d.meals || []).filter((m) => m.id !== id) }));
+  }, []);
+
+  const navMese = (dir) => {
+    let m = mese + dir, a = anno;
+    if (m < 0) { m = 11; a--; } if (m > 11) { m = 0; a++; }
+    setMese(m); setAnno(a);
+  };
+  const navGiorno = (dir) => {
+    const d = parseDate(selected);
+    d.setDate(d.getDate() + dir);
+    setSelected(fmt(d));
+    setMese(d.getMonth()); setAnno(d.getFullYear());
+  };
+  const selDate = parseDate(selected);
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: S.bg, color: S.text,
+      fontFamily: "'Avenir Next','Segoe UI',system-ui,-apple-system,sans-serif",
+      padding: "28px 18px",
+    }}>
+      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: -0.3 }}>Training Tracker</h1>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn onClick={() => setModal({ type: "settings" })} title="Impostazioni">⚙</Btn>
+            <Btn primary onClick={() => setModal({ type: "session", initial: { date: selected } })}>+ Aggiungi</Btn>
+          </div>
+        </div>
+
+        {!data.settings.pesoConfermato && (
+          <div style={{ fontSize: 13, color: "#C9A24B", margin: "6px 0 2px" }}>
+            Peso predefinito: {data.settings.peso} kg — impostalo in ⚙ per calorie precise.
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, margin: "16px 0 22px", borderBottom: `1px solid ${S.border}`, paddingBottom: 14, flexWrap: "wrap" }}>
+          {[["mese", "Mese"], ["anno", "Anno"], ["stats", "Statistiche"], ["cibo", "Cibo"]].map(([k, l]) => (
+            <Btn key={k} active={view === k} onClick={() => setView(k)}>{l}</Btn>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <Btn small onClick={() => (view === "mese" ? navMese(-1) : view === "cibo" ? navGiorno(-1) : setAnno(anno - 1))}>‹</Btn>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>
+            {view === "mese" ? `${MESI[mese]} ${anno}`
+              : view === "cibo" ? `${GIORNI[dowMon(selDate)]} ${selDate.getDate()} ${MESI[selDate.getMonth()].toLowerCase()} ${selDate.getFullYear()}`
+              : anno}
+          </div>
+          <Btn small onClick={() => (view === "mese" ? navMese(1) : view === "cibo" ? navGiorno(1) : setAnno(anno + 1))}>›</Btn>
+        </div>
+
+        {view === "mese" && (
+          <>
+            <MonthView anno={anno} mese={mese} sessions={data.sessions} settings={data.settings}
+              selected={selected} onSelect={setSelected} oggi={oggi} />
+            <DayDetail dateKey={selected} sessions={data.sessions}
+              onAdd={() => setModal({ type: "session", initial: { date: selected } })}
+              onEdit={(s) => setModal({ type: "session", initial: s })} />
+          </>
+        )}
+
+        {view === "anno" && (
+          <YearView anno={anno} sessions={data.sessions}
+            onSelectDay={(k) => { setSelected(k); const d = parseDate(k); setMese(d.getMonth()); setView("mese"); }} />
+        )}
+
+        {view === "stats" && <StatsView anno={anno} sessions={data.sessions} oggi={oggi} />}
+
+        {view === "cibo" && (
+          <FoodView dateKey={selected} meals={data.meals || []} sessions={data.sessions} settings={data.settings}
+            onSaveMeal={saveMeal} onUpdateMeal={updateMeal} onDeleteMeal={deleteMeal} />
+        )}
+      </div>
+
+      {modal?.type === "session" && (
+        <SessionModal initial={modal.initial} peso={data.settings.peso}
+          onSave={upsert} onDelete={remove} onClose={() => setModal(null)} />
+      )}
+      {modal?.type === "settings" && (
+        <SettingsModal settings={data.settings}
+          onSave={(s) => { setData((d) => ({ ...d, settings: s })); setModal(null); }}
+          onClose={() => setModal(null)} />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<TrainingTracker />);
+</script>
+</body>
+</html>
