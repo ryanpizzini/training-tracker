@@ -70,6 +70,15 @@ function calcBMR({peso,altezza,eta,sesso}){
   return Math.round(10*p + 6.25*h - 5*e + (sesso==="F"?-161:5));
 }
 
+// Estrae nomi di alimenti da un testo libero, rimuovendo quantità/unità comuni.
+// Approssimativo: usato per popolare la ricerca alimenti quando NON si usa la stima AI
+// (che invece fornisce già nomi puliti tramite "voci").
+function estraiAlimenti(testo){
+  return String(testo||"").split(",").map(s=>s.trim()).filter(Boolean).map(s=>{
+    return s.replace(/^[\d.,]+\s*(g|gr|grammi|kg|ml|l|cucchiai(no|ni)?|fett[ae]|tazz[ae]|pezz[oi]|porzion[ei]|manciat[ae]|cucchiaio)?\s*(di\s+|d[i']\s*)?/i,"").trim();
+  }).filter(s=>s.length>1);
+}
+
 // ── Defaults ── (valori per Ryan: 77kg→74.5kg entro 31 ago, deficit -450 kcal)
 const DEF_S = {
   peso:77, altezza:180, eta:18, sesso:"M", apiKey:"",
@@ -539,19 +548,29 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
     ? `${monday.getDate()} ${MS[monday.getMonth()]} – ${sunday.getDate()} ${MS[sunday.getMonth()]}`
     : `${monday.getDate()} ${MS[monday.getMonth()]} ${monday.getFullYear()} – ${sunday.getDate()} ${MS[sunday.getMonth()]} ${sunday.getFullYear()}`;
   const settimana=useMemo(()=>{
-    let wAssunte=0,wBruciate=0,giorni=0;
+    let wAssunte=0,wBruciate=0,giorni=0,wProt=0,wGrassi=0,wCarbo=0;
     if(monday.getTime()<=weekEnd.getTime()){
       const cur=new Date(monday);
       while(fmt(cur)<=fmt(weekEnd)){
         const k=fmt(cur);
-        const mk=meals.filter(m=>m.date===k).reduce((a,m)=>a+(Number(m.kcal)||0),0);
+        const mDay=meals.filter(m=>m.date===k);
+        const mk=mDay.reduce((a,m)=>a+(Number(m.kcal)||0),0);
         const sk=sessions.filter(s=>s.date===k).reduce((a,s)=>a+(s.calorie||0),0);
         wAssunte+=mk; wBruciate+=riposo+sk; giorni++;
+        wProt+=mDay.reduce((a,m)=>a+(Number(m.proteine)||0),0);
+        wGrassi+=mDay.reduce((a,m)=>a+(Number(m.grassi)||0),0);
+        wCarbo+=mDay.reduce((a,m)=>a+(Number(m.carboidrati)||0),0);
         cur.setDate(cur.getDate()+1);
       }
     }
-    return {wAssunte,wBruciate,giorni,bil:wAssunte-wBruciate,target:kcalTarget*giorni};
-  },[meals,sessions,wOffset,riposo,kcalTarget]);
+    return {
+      wAssunte,wBruciate,giorni,bil:wAssunte-wBruciate,target:kcalTarget*giorni,
+      wProt,wGrassi,wCarbo,
+      protTarget:(Number(settings.proteineTarget)||0)*giorni,
+      grassiTarget:(Number(settings.grassiTarget)||0)*giorni,
+      carboTarget:(Number(settings.carboTarget)||0)*giorni,
+    };
+  },[meals,sessions,wOffset,riposo,kcalTarget,settings.proteineTarget,settings.grassiTarget,settings.carboTarget]);
 
   const foodFiltrati=useMemo(()=>{
     const list=foodHistory||[];
@@ -646,25 +665,35 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
 
     {/* Avanzamento kcal */}
     <div style={box}>
-      <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Calorie vs target</div>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>
+        Calorie vs target {vista==="settimana"?"— settimana":"— oggi"}
+      </div>
       <div style={{height:11,background:C.bg,borderRadius:8,overflow:"hidden",marginBottom:5}}>
         <div style={{height:11,borderRadius:8,transition:"width .3s",
-          width:`${Math.min(100,(assunte/kcalTarget)*100)}%`,
-          background:assunte>kcalTarget*1.1?C.red:assunte>kcalTarget*0.85?C.green:C.amber}}/>
+          width:`${Math.min(100,((vista==="settimana"?settimana.wAssunte:assunte)/(vista==="settimana"?(settimana.target||1):kcalTarget))*100)}%`,
+          background:(vista==="settimana"?settimana.wAssunte:assunte)>(vista==="settimana"?settimana.target:kcalTarget)*1.1?C.red
+            :(vista==="settimana"?settimana.wAssunte:assunte)>(vista==="settimana"?settimana.target:kcalTarget)*0.85?C.green:C.amber}}/>
       </div>
-      <div style={{fontSize:12,color:C.muted}}>{Math.round((assunte/kcalTarget)*100)}% · {assunte} / {kcalTarget} kcal</div>
+      <div style={{fontSize:12,color:C.muted}}>
+        {vista==="settimana"
+          ?`${settimana.target?Math.round((settimana.wAssunte/settimana.target)*100):0}% · ${settimana.wAssunte} / ${settimana.target} kcal`
+          :`${Math.round((assunte/kcalTarget)*100)}% · ${assunte} / ${kcalTarget} kcal`}
+      </div>
     </div>
 
     {/* Macro */}
     <div style={box}>
-      <div style={{fontSize:13.5,fontWeight:700,marginBottom:13}}>Macronutrienti — oggi</div>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:13}}>
+        Macronutrienti {vista==="settimana"?"— settimana":"— oggi"}
+      </div>
       <div style={{display:"flex",flexDirection:"column",gap:12}}>
-        <MacroBar nome="Proteine" val={protTot} target={settings.proteineTarget} col="#5B9BFF"/>
-        <MacroBar nome="Grassi" val={grassiTot} target={settings.grassiTarget} col="#FF6B9D"/>
-        <MacroBar nome="Carboidrati" val={carboTot} target={settings.carboTarget} col="#4CC57A"/>
+        <MacroBar nome="Proteine" val={vista==="settimana"?settimana.wProt:protTot} target={vista==="settimana"?settimana.protTarget:settings.proteineTarget} col="#5B9BFF"/>
+        <MacroBar nome="Grassi" val={vista==="settimana"?settimana.wGrassi:grassiTot} target={vista==="settimana"?settimana.grassiTarget:settings.grassiTarget} col="#FF6B9D"/>
+        <MacroBar nome="Carboidrati" val={vista==="settimana"?settimana.wCarbo:carboTot} target={vista==="settimana"?settimana.carboTarget:settings.carboTarget} col="#4CC57A"/>
       </div>
       <div style={{fontSize:11,color:C.faint,marginTop:11}}>
         &lt;70%: bassi · 70–115%: in linea · &gt;115%: alti · Target modificabili in ⚙
+        {vista==="settimana"&&settimana.giorni===0&&" · Nessun giorno ancora trascorso in questa settimana."}
       </div>
     </div>
 
@@ -714,7 +743,7 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
       </div>}
       <div style={{fontSize:10.5,color:C.faint,marginTop:7}}>
         {settings.apiKey?"Stime AI indicative, modificabili prima di salvare.":"Per la stima AI inserisci la chiave API in ⚙."}
-        {" "}Gli alimenti cercabili sopra si popolano solo dai pasti stimati con l'AI.
+        {" "}Ogni alimento che scrivi (con o senza AI) resta salvato per la ricerca rapida qui sopra.
       </div>
     </div>
 
@@ -773,9 +802,10 @@ function App(){
     setData(d=>{
       const meals=[...(d.meals||[]).filter(x=>x.id!==m.id),m];
       let foodHistory=d.foodHistory||[];
-      if(Array.isArray(m.voci)&&m.voci.length){
-        const nomi=m.voci.map(v=>String(v.nome||"").trim()).filter(Boolean);
-        foodHistory=[...nomi.reverse(),...foodHistory];
+      const nomiAI=Array.isArray(m.voci)?m.voci.map(v=>String(v.nome||"").trim()).filter(Boolean):[];
+      const nomi=nomiAI.length?nomiAI:estraiAlimenti(m.testo);
+      if(nomi.length){
+        foodHistory=[...nomi.slice().reverse(),...foodHistory];
         const seen=new Set();
         foodHistory=foodHistory.filter(n=>{ const k=n.toLowerCase(); if(seen.has(k)) return false; seen.add(k); return true; }).slice(0,80);
       }
