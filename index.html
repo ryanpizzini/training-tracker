@@ -105,7 +105,9 @@ function bmr({ peso, altezza, eta, sesso }) {
 const DEFAULT_DATA = {
   sessions: [],
   meals: [],
-  settings: { peso: 75, altezza: 180, eta: 18, sesso: "M", apiKey: "", pesoConfermato: false, giorniProgrammati: [0, 1, 3, 4] },
+  settings: { peso: 75, altezza: 180, eta: 18, sesso: "M", apiKey: "",
+    proteineTarget: 135, grassiTarget: 75, carboTarget: 300,
+    pesoConfermato: false, giorniProgrammati: [0, 1, 3, 4] },
 };
 
 function loadData() {
@@ -298,12 +300,15 @@ function SessionModal({ initial, peso, onSave, onDelete, onClose }) {
 }
 
 // ── Modale impostazioni ──────────────────────────────────────
-function SettingsModal({ settings, onSave, onClose }) {
+function SettingsModal({ settings, onSave, onExport, onImport, onClose }) {
   const [peso, setPeso] = useState(settings.peso);
   const [altezza, setAltezza] = useState(settings.altezza ?? 180);
   const [eta, setEta] = useState(settings.eta ?? 18);
   const [sesso, setSesso] = useState(settings.sesso || "M");
   const [apiKey, setApiKey] = useState(settings.apiKey || "");
+  const [proteineTarget, setProteineTarget] = useState(settings.proteineTarget ?? 135);
+  const [grassiTarget, setGrassiTarget] = useState(settings.grassiTarget ?? 75);
+  const [carboTarget, setCarboTarget] = useState(settings.carboTarget ?? 300);
   const [giorni, setGiorni] = useState(settings.giorniProgrammati);
   const toggle = (i) =>
     setGiorni((g) => (g.includes(i) ? g.filter((x) => x !== i) : [...g, i].sort()));
@@ -345,6 +350,28 @@ function SettingsModal({ settings, onSave, onClose }) {
       <div style={{ fontSize: 12.5, color: S.faint, margin: "-4px 0 14px" }}>
         Metabolismo basale stimato: {anteprima} kcal/giorno (Mifflin-St Jeor) — usato per le calorie a riposo.
       </div>
+      <Field label="Obiettivi macronutrienti giornalieri (g)">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          <div>
+            <div style={{ fontSize: 11.5, color: "#5B9BFF", marginBottom: 4 }}>Proteine</div>
+            <input type="number" min="0" value={proteineTarget}
+              onChange={(e) => setProteineTarget(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11.5, color: "#FF6B9D", marginBottom: 4 }}>Grassi</div>
+            <input type="number" min="0" value={grassiTarget}
+              onChange={(e) => setGrassiTarget(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11.5, color: "#4CC57A", marginBottom: 4 }}>Carboidrati</div>
+            <input type="number" min="0" value={carboTarget}
+              onChange={(e) => setCarboTarget(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: S.faint, marginTop: 6 }}>
+          Valori di partenza indicativi in base al peso; modificali secondo il tuo obiettivo.
+        </div>
+      </Field>
       <Field label="Chiave API Anthropic (per la stima calorie AI dei pasti)">
         <input type="password" value={apiKey} autoComplete="off"
           onChange={(e) => setApiKey(e.target.value)} style={inputStyle}
@@ -372,6 +399,23 @@ function SettingsModal({ settings, onSave, onClose }) {
           Nei giorni programmati senza allenamento il calendario segna "Saltato".
         </div>
       </Field>
+      <Field label="Backup dei dati">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <Btn small onClick={onExport}>Esporta backup</Btn>
+          <label style={{
+            padding: "5px 10px", borderRadius: 10, cursor: "pointer",
+            fontSize: 13, fontWeight: 500, color: S.text,
+            border: `1px solid ${S.border}`, display: "inline-block",
+          }}>
+            Importa backup
+            <input type="file" accept=".json,application/json" style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) onImport(f); e.target.value = ""; }} />
+          </label>
+        </div>
+        <div style={{ fontSize: 12, color: S.faint, marginTop: 6 }}>
+          Esporta un file JSON con tutti i dati (chiave API esclusa). L'importazione sostituisce i dati su questo dispositivo.
+        </div>
+      </Field>
       <div style={{ textAlign: "right" }}>
         <Btn primary onClick={() => onSave({
           peso: Number(peso) || 75,
@@ -379,6 +423,9 @@ function SettingsModal({ settings, onSave, onClose }) {
           eta: Number(eta) || 18,
           sesso,
           apiKey: apiKey.trim(),
+          proteineTarget: Number(proteineTarget) || 0,
+          grassiTarget: Number(grassiTarget) || 0,
+          carboTarget: Number(carboTarget) || 0,
           pesoConfermato: true,
           giorniProgrammati: giorni,
         })}>
@@ -668,6 +715,9 @@ function StatsView({ anno, sessions, oggi }) {
 function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal, onDeleteMeal }) {
   const [testo, setTesto] = useState("");
   const [kcalInput, setKcalInput] = useState("");
+  const [proteineInput, setProteineInput] = useState("");
+  const [grassiInput, setGrassiInput] = useState("");
+  const [carboInput, setCarboInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [errore, setErrore] = useState("");
   const [stima, setStima] = useState(null); // { voci, nota }
@@ -691,11 +741,13 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
           messages: [{
             role: "user",
             content:
-              "Stima le calorie di questo pasto dato l'elenco di ingredienti (in italiano). " +
+              "Stima le calorie e i macronutrienti (proteine, grassi, carboidrati in grammi) di questo pasto " +
+              "dato l'elenco di ingredienti (in italiano). " +
               "Se mancano le quantità, assumi porzioni tipiche per un adulto e segnalalo nella nota.\n\n" +
               "Pasto: " + testo + "\n\n" +
               'Rispondi SOLO con JSON valido, senza testo prima o dopo e senza backtick:\n' +
-              '{"kcal": <numero totale>, "voci": [{"nome": "<ingrediente>", "kcal": <numero>}], "nota": "<assunzioni fatte, max 15 parole>"}',
+              '{"kcal": <numero totale>, "proteine": <grammi>, "grassi": <grammi>, "carboidrati": <grammi>, ' +
+              '"voci": [{"nome": "<ingrediente>", "kcal": <numero>}], "nota": "<assunzioni fatte, max 15 parole>"}',
           }],
         }),
       });
@@ -707,23 +759,37 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
       const parsed = JSON.parse(txt.replace(/```json|```/g, "").trim());
       const kcal = Math.round(Number(parsed.kcal)) || 0;
       setKcalInput(String(kcal));
+      setProteineInput(String(Math.round(Number(parsed.proteine)) || 0));
+      setGrassiInput(String(Math.round(Number(parsed.grassi)) || 0));
+      setCarboInput(String(Math.round(Number(parsed.carboidrati)) || 0));
       setStima({ voci: Array.isArray(parsed.voci) ? parsed.voci : [], nota: parsed.nota || "" });
     } catch (e) {
-      setErrore("Stima non riuscita (" + e.message + "). Riprova o inserisci le kcal a mano.");
+      setErrore("Stima non riuscita (" + e.message + "). Riprova o inserisci i valori a mano.");
     }
     setLoading(false);
   };
 
   const dayMeals = meals.filter((m) => m.date === dateKey);
   const assunte = dayMeals.reduce((a, m) => a + (Number(m.kcal) || 0), 0);
+  const proteineTot = dayMeals.reduce((a, m) => a + (Number(m.proteine) || 0), 0);
+  const grassiTot = dayMeals.reduce((a, m) => a + (Number(m.grassi) || 0), 0);
+  const carboTot = dayMeals.reduce((a, m) => a + (Number(m.carboidrati) || 0), 0);
   const allenamento = sessions.filter((s) => s.date === dateKey).reduce((a, s) => a + (s.calorie || 0), 0);
   const riposo = bmr(settings);
   const bruciateTot = riposo + allenamento;
 
   const salva = () => {
     if (!testo.trim()) return;
-    onSaveMeal({ id: `m_${Date.now()}`, date: dateKey, testo: testo.trim(), kcal: Number(kcalInput) || 0, voci: stima?.voci || [] });
-    setTesto(""); setKcalInput(""); setStima(null); setErrore("");
+    onSaveMeal({
+      id: `m_${Date.now()}`, date: dateKey, testo: testo.trim(),
+      kcal: Number(kcalInput) || 0,
+      proteine: Number(proteineInput) || 0,
+      grassi: Number(grassiInput) || 0,
+      carboidrati: Number(carboInput) || 0,
+      voci: stima?.voci || [],
+    });
+    setTesto(""); setKcalInput(""); setProteineInput(""); setGrassiInput(""); setCarboInput("");
+    setStima(null); setErrore("");
   };
 
   const box = { background: S.cardHi, border: `1px solid ${S.border}`, borderRadius: 14, padding: 16 };
@@ -750,6 +816,49 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
       </div>
 
       <div style={box}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Macronutrienti — oggi</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {[
+            { nome: "Proteine", val: proteineTot, target: settings.proteineTarget, colore: "#5B9BFF" },
+            { nome: "Grassi", val: grassiTot, target: settings.grassiTarget, colore: "#FF6B9D" },
+            { nome: "Carboidrati", val: carboTot, target: settings.carboTarget, colore: "#4CC57A" },
+          ].map((m) => {
+            const target = Number(m.target) || 0;
+            const pct = target > 0 ? (m.val / target) * 100 : 0;
+            let stato = "In linea", statoColore = S.allenato;
+            if (target > 0) {
+              if (pct < 70) { stato = "Bassi"; statoColore = "#C9A24B"; }
+              else if (pct > 115) { stato = "Alti"; statoColore = S.saltato; }
+            } else { stato = "Nessun obiettivo impostato"; statoColore = S.faint; }
+            return (
+              <div key={m.nome}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, marginBottom: 6 }}>
+                  <span style={{ color: m.colore, fontWeight: 600 }}>{m.nome}</span>
+                  <span style={{ color: S.muted }}>
+                    {Math.round(m.val)} / {target || "—"} g
+                    <span style={{ color: statoColore, fontWeight: 600, marginLeft: 8 }}>{stato}</span>
+                  </span>
+                </div>
+                <div style={{ height: 9, background: S.bg, borderRadius: 8, overflow: "hidden" }}>
+                  <div style={{
+                    height: 9, width: `${Math.min(100, pct)}%`, background: m.colore,
+                    borderRadius: 8, transition: "width .3s",
+                  }} />
+                  {pct > 100 && (
+                    <div style={{ marginTop: -9, height: 9, width: "100%", boxSizing: "border-box",
+                      borderRight: `3px solid ${S.saltato}` }} />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11.5, color: S.faint, marginTop: 12 }}>
+          Sotto il 70% dell'obiettivo: "Bassi". Sopra il 115%: "Alti". Obiettivi modificabili in ⚙.
+        </div>
+      </div>
+
+      <div style={box}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Aggiungi un pasto</div>
         <textarea rows={2} value={testo} onChange={(e) => setTesto(e.target.value)}
           style={{ ...inputStyle, resize: "vertical" }}
@@ -758,9 +867,25 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
           <Btn primary onClick={stimaAI} style={{ opacity: loading || !testo.trim() ? 0.6 : 1 }}>
             {loading ? "Stima in corso…" : "Stima con AI"}
           </Btn>
-          <input type="number" min="0" value={kcalInput} onChange={(e) => setKcalInput(e.target.value)}
-            style={{ ...inputStyle, width: 110 }} placeholder="kcal" />
           <Btn onClick={salva}>Salva pasto</Btn>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginTop: 10 }}>
+          <div>
+            <div style={{ fontSize: 11, color: S.muted, marginBottom: 3 }}>kcal</div>
+            <input type="number" min="0" value={kcalInput} onChange={(e) => setKcalInput(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "#5B9BFF", marginBottom: 3 }}>Proteine (g)</div>
+            <input type="number" min="0" value={proteineInput} onChange={(e) => setProteineInput(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "#FF6B9D", marginBottom: 3 }}>Grassi (g)</div>
+            <input type="number" min="0" value={grassiInput} onChange={(e) => setGrassiInput(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "#4CC57A", marginBottom: 3 }}>Carboidrati (g)</div>
+            <input type="number" min="0" value={carboInput} onChange={(e) => setCarboInput(e.target.value)} style={inputStyle} />
+          </div>
         </div>
         {errore && <div style={{ fontSize: 13, color: "#E77", marginTop: 8 }}>{errore}</div>}
         {stima && (
@@ -776,8 +901,8 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
         )}
         <div style={{ fontSize: 11.5, color: S.faint, marginTop: 8 }}>
           {settings.apiKey
-            ? "La kcal proposta dall'AI è modificabile prima di salvare. Stime indicative, non valori certificati."
-            : "Per la stima automatica AI inserisci la tua chiave API Anthropic in ⚙ (resta salvata solo su questo dispositivo)."}
+            ? "I valori proposti dall'AI sono modificabili prima di salvare. Stime indicative, non valori certificati."
+            : "Per la stima automatica AI inserisci la tua chiave API Anthropic in ⚙ (resta salvata solo su questo dispositivo). Puoi comunque inserire i valori a mano."}
         </div>
       </div>
 
@@ -789,17 +914,33 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {dayMeals.map((m) => (
               <div key={m.id} style={{
-                display: "flex", alignItems: "center", gap: 10,
+                display: "flex", flexDirection: "column", gap: 6,
                 background: S.bg, border: `1px solid ${S.border}`, borderRadius: 12, padding: "8px 12px",
               }}>
-                <span style={{ flex: 1, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                  title={m.testo}>{m.testo}</span>
-                <input type="number" min="0" value={m.kcal}
-                  onChange={(e) => onUpdateMeal(m.id, e.target.value)}
-                  style={{ ...inputStyle, width: 90, padding: "6px 8px", fontSize: 14 }} />
-                <span style={{ fontSize: 12.5, color: S.muted }}>kcal</span>
-                <button onClick={() => onDeleteMeal(m.id)} aria-label="Elimina pasto"
-                  style={{ background: "none", border: "none", color: S.faint, fontSize: 18, cursor: "pointer", padding: 2 }}>×</button>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ flex: 1, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    title={m.testo}>{m.testo}</span>
+                  <button onClick={() => onDeleteMeal(m.id)} aria-label="Elimina pasto"
+                    style={{ background: "none", border: "none", color: S.faint, fontSize: 18, cursor: "pointer", padding: 2 }}>×</button>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <input type="number" min="0" value={m.kcal}
+                    onChange={(e) => onUpdateMeal(m.id, "kcal", e.target.value)}
+                    style={{ ...inputStyle, width: 78, padding: "6px 8px", fontSize: 13 }} />
+                  <span style={{ fontSize: 11.5, color: S.muted }}>kcal</span>
+                  <input type="number" min="0" value={m.proteine || 0}
+                    onChange={(e) => onUpdateMeal(m.id, "proteine", e.target.value)}
+                    style={{ ...inputStyle, width: 60, padding: "6px 8px", fontSize: 13, borderColor: "#5B9BFF44" }} />
+                  <span style={{ fontSize: 11.5, color: "#5B9BFF" }}>P</span>
+                  <input type="number" min="0" value={m.grassi || 0}
+                    onChange={(e) => onUpdateMeal(m.id, "grassi", e.target.value)}
+                    style={{ ...inputStyle, width: 60, padding: "6px 8px", fontSize: 13, borderColor: "#FF6B9D44" }} />
+                  <span style={{ fontSize: 11.5, color: "#FF6B9D" }}>G</span>
+                  <input type="number" min="0" value={m.carboidrati || 0}
+                    onChange={(e) => onUpdateMeal(m.id, "carboidrati", e.target.value)}
+                    style={{ ...inputStyle, width: 60, padding: "6px 8px", fontSize: 13, borderColor: "#4CC57A44" }} />
+                  <span style={{ fontSize: 11.5, color: "#4CC57A" }}>C</span>
+                </div>
               </div>
             ))}
           </div>
@@ -840,12 +981,53 @@ function TrainingTracker() {
   const saveMeal = useCallback((meal) => {
     setData((d) => ({ ...d, meals: [...(d.meals || []).filter((m) => m.id !== meal.id), meal] }));
   }, []);
-  const updateMeal = useCallback((id, kcal) => {
-    setData((d) => ({ ...d, meals: (d.meals || []).map((m) => (m.id === id ? { ...m, kcal: Number(kcal) || 0 } : m)) }));
+  const updateMeal = useCallback((id, field, value) => {
+    setData((d) => ({ ...d, meals: (d.meals || []).map((m) => (m.id === id ? { ...m, [field]: Number(value) || 0 } : m)) }));
   }, []);
   const deleteMeal = useCallback((id) => {
     setData((d) => ({ ...d, meals: (d.meals || []).filter((m) => m.id !== id) }));
   }, []);
+
+  const esportaBackup = () => {
+    // Chiave API esclusa: il file di backup può girare tra dispositivi/cloud.
+    const { apiKey, ...restSettings } = data.settings;
+    const payload = {
+      app: "training-tracker", esportatoIl: new Date().toISOString(),
+      sessions: data.sessions, meals: data.meals || [], settings: restSettings,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "training-tracker-backup-" + fmt(new Date()) + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const importaBackup = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        if (!Array.isArray(parsed.sessions)) throw new Error("formato non riconosciuto");
+        if (!window.confirm(
+          "Importare il backup? Sostituirà i dati attuali su questo dispositivo (" +
+          parsed.sessions.length + " allenamenti, " + (parsed.meals || []).length + " pasti)."
+        )) return;
+        setData((d) => ({
+          sessions: parsed.sessions,
+          meals: parsed.meals || [],
+          settings: { ...DEFAULT_DATA.settings, ...(parsed.settings || {}), apiKey: d.settings.apiKey },
+        }));
+        setModal(null);
+      } catch (e) {
+        window.alert("Importazione non riuscita: " + e.message);
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const navMese = (dir) => {
     let m = mese + dir, a = anno;
@@ -928,6 +1110,8 @@ function TrainingTracker() {
       {modal?.type === "settings" && (
         <SettingsModal settings={data.settings}
           onSave={(s) => { setData((d) => ({ ...d, settings: s })); setModal(null); }}
+          onExport={esportaBackup}
+          onImport={importaBackup}
           onClose={() => setModal(null)} />
       )}
     </div>
