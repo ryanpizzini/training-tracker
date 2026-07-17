@@ -105,7 +105,7 @@ function bmr({ peso, altezza, eta, sesso }) {
 const DEFAULT_DATA = {
   sessions: [],
   meals: [],
-  settings: { peso: 75, altezza: 180, eta: 18, sesso: "M", pesoConfermato: false, giorniProgrammati: [0, 1, 3, 4] },
+  settings: { peso: 75, altezza: 180, eta: 18, sesso: "M", apiKey: "", pesoConfermato: false, giorniProgrammati: [0, 1, 3, 4] },
 };
 
 function loadData() {
@@ -303,6 +303,7 @@ function SettingsModal({ settings, onSave, onClose }) {
   const [altezza, setAltezza] = useState(settings.altezza ?? 180);
   const [eta, setEta] = useState(settings.eta ?? 18);
   const [sesso, setSesso] = useState(settings.sesso || "M");
+  const [apiKey, setApiKey] = useState(settings.apiKey || "");
   const [giorni, setGiorni] = useState(settings.giorniProgrammati);
   const toggle = (i) =>
     setGiorni((g) => (g.includes(i) ? g.filter((x) => x !== i) : [...g, i].sort()));
@@ -344,6 +345,14 @@ function SettingsModal({ settings, onSave, onClose }) {
       <div style={{ fontSize: 12.5, color: S.faint, margin: "-4px 0 14px" }}>
         Metabolismo basale stimato: {anteprima} kcal/giorno (Mifflin-St Jeor) — usato per le calorie a riposo.
       </div>
+      <Field label="Chiave API Anthropic (per la stima calorie AI dei pasti)">
+        <input type="password" value={apiKey} autoComplete="off"
+          onChange={(e) => setApiKey(e.target.value)} style={inputStyle}
+          placeholder="sk-ant-…" />
+        <div style={{ fontSize: 12, color: S.faint, marginTop: 6 }}>
+          Salvata solo su questo dispositivo. Non condividerla e non caricarla mai su GitHub.
+        </div>
+      </Field>
       <Field label="Giorni di allenamento programmati">
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {GIORNI.map((g, i) => (
@@ -369,6 +378,7 @@ function SettingsModal({ settings, onSave, onClose }) {
           altezza: Number(altezza) || 180,
           eta: Number(eta) || 18,
           sesso,
+          apiKey: apiKey.trim(),
           pesoConfermato: true,
           giorniProgrammati: giorni,
         })}>
@@ -658,6 +668,51 @@ function StatsView({ anno, sessions, oggi }) {
 function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal, onDeleteMeal }) {
   const [testo, setTesto] = useState("");
   const [kcalInput, setKcalInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [errore, setErrore] = useState("");
+  const [stima, setStima] = useState(null); // { voci, nota }
+
+  const stimaAI = async () => {
+    if (!testo.trim() || loading) return;
+    if (!settings.apiKey) { setErrore("Per la stima AI inserisci la tua chiave API Anthropic in ⚙."); return; }
+    setLoading(true); setErrore(""); setStima(null);
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": settings.apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content:
+              "Stima le calorie di questo pasto dato l'elenco di ingredienti (in italiano). " +
+              "Se mancano le quantità, assumi porzioni tipiche per un adulto e segnalalo nella nota.\n\n" +
+              "Pasto: " + testo + "\n\n" +
+              'Rispondi SOLO con JSON valido, senza testo prima o dopo e senza backtick:\n' +
+              '{"kcal": <numero totale>, "voci": [{"nome": "<ingrediente>", "kcal": <numero>}], "nota": "<assunzioni fatte, max 15 parole>"}',
+          }],
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(response.status === 401 ? "chiave API non valida" : "HTTP " + response.status);
+      }
+      const data = await response.json();
+      const txt = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      const parsed = JSON.parse(txt.replace(/```json|```/g, "").trim());
+      const kcal = Math.round(Number(parsed.kcal)) || 0;
+      setKcalInput(String(kcal));
+      setStima({ voci: Array.isArray(parsed.voci) ? parsed.voci : [], nota: parsed.nota || "" });
+    } catch (e) {
+      setErrore("Stima non riuscita (" + e.message + "). Riprova o inserisci le kcal a mano.");
+    }
+    setLoading(false);
+  };
 
   const dayMeals = meals.filter((m) => m.date === dateKey);
   const assunte = dayMeals.reduce((a, m) => a + (Number(m.kcal) || 0), 0);
@@ -667,8 +722,8 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
 
   const salva = () => {
     if (!testo.trim()) return;
-    onSaveMeal({ id: `m_${Date.now()}`, date: dateKey, testo: testo.trim(), kcal: Number(kcalInput) || 0, voci: [] });
-    setTesto(""); setKcalInput("");
+    onSaveMeal({ id: `m_${Date.now()}`, date: dateKey, testo: testo.trim(), kcal: Number(kcalInput) || 0, voci: stima?.voci || [] });
+    setTesto(""); setKcalInput(""); setStima(null); setErrore("");
   };
 
   const box = { background: S.cardHi, border: `1px solid ${S.border}`, borderRadius: 14, padding: 16 };
@@ -699,13 +754,30 @@ function FoodView({ dateKey, meals, sessions, settings, onSaveMeal, onUpdateMeal
         <textarea rows={2} value={testo} onChange={(e) => setTesto(e.target.value)}
           style={{ ...inputStyle, resize: "vertical" }}
           placeholder="Cosa hai mangiato — es. pasta al pomodoro con parmigiano" />
-        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <Btn primary onClick={stimaAI} style={{ opacity: loading || !testo.trim() ? 0.6 : 1 }}>
+            {loading ? "Stima in corso…" : "Stima con AI"}
+          </Btn>
           <input type="number" min="0" value={kcalInput} onChange={(e) => setKcalInput(e.target.value)}
             style={{ ...inputStyle, width: 110 }} placeholder="kcal" />
-          <Btn primary onClick={salva}>Salva pasto</Btn>
+          <Btn onClick={salva}>Salva pasto</Btn>
         </div>
+        {errore && <div style={{ fontSize: 13, color: "#E77", marginTop: 8 }}>{errore}</div>}
+        {stima && (
+          <div style={{ marginTop: 12, borderTop: `1px solid ${S.border}`, paddingTop: 10, fontSize: 13, color: S.muted, lineHeight: 1.7 }}>
+            {stima.voci.map((v, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between" }}>
+                <span>{v.nome}</span>
+                <span style={{ fontVariantNumeric: "tabular-nums" }}>{v.kcal} kcal</span>
+              </div>
+            ))}
+            {stima.nota && <div style={{ fontSize: 12, color: S.faint, marginTop: 4 }}>Assunzioni: {stima.nota}</div>}
+          </div>
+        )}
         <div style={{ fontSize: 11.5, color: S.faint, marginTop: 8 }}>
-          In questa versione le kcal si inseriscono a mano (la stima automatica via AI è disponibile nella versione dentro Claude).
+          {settings.apiKey
+            ? "La kcal proposta dall'AI è modificabile prima di salvare. Stime indicative, non valori certificati."
+            : "Per la stima automatica AI inserisci la tua chiave API Anthropic in ⚙ (resta salvata solo su questo dispositivo)."}
         </div>
       </div>
 
