@@ -54,7 +54,7 @@
   }, 4000);
 </script>
 
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, useCallback } = React;
 
 // ─────────────────────────────────────────────────────────────
@@ -863,6 +863,19 @@ function TrainingTracker() {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<TrainingTracker />);
+</script>
+<script>
+  // Trasformazione manuale con runtime "classic": evita che Babel generi
+  // un import automatico di react/jsx-runtime (incompatibile con <script> non-module).
+  try {
+    var src = document.getElementById('app-source').textContent;
+    var out = Babel.transform(src, { presets: [["react", { runtime: "classic" }]] }).code;
+    var s = document.createElement('script');
+    s.text = out;
+    document.body.appendChild(s);
+  } catch (e) {
+    showDebug('Errore di trasformazione Babel: ' + e.message);
+  }
 </script>
 </body>
 </html>
