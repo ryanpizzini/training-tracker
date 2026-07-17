@@ -24,10 +24,35 @@
   html, body { margin: 0; padding: 0; background: #0F1013; overscroll-behavior-y: none; }
   * { -webkit-tap-highlight-color: transparent; }
   input, textarea, button { font-family: inherit; }
+  #debug-overlay { display:none; position:fixed; inset:0; background:#0F1013; color:#F0A9A9;
+    font-family: -apple-system, system-ui, sans-serif; font-size:14px; padding:20px; z-index:9999;
+    white-space:pre-wrap; overflow:auto; box-sizing:border-box; }
 </style>
 </head>
 <body>
+<div id="debug-overlay"></div>
 <div id="root"></div>
+<script>
+  // Mostra qualsiasi errore JS direttamente nella pagina (utile su iPhone, senza console)
+  function showDebug(msg) {
+    var el = document.getElementById('debug-overlay');
+    el.style.display = 'block';
+    el.textContent = "Si è verificato un errore nel caricamento dell'app:\n\n" + msg +
+      "\n\n— Fai uno screenshot di questa schermata e mandalo in chat.";
+  }
+  window.addEventListener('error', function (e) {
+    showDebug((e.message || 'Errore sconosciuto') + '\n' + (e.filename ? (e.filename + ':' + e.lineno) : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    showDebug('Promise error: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+  setTimeout(function () {
+    if (document.getElementById('root').children.length === 0 &&
+        document.getElementById('debug-overlay').style.display !== 'block') {
+      showDebug('L\'app non si è avviata entro 4 secondi e nessun errore è stato intercettato.\nPossibile causa: uno script esterno (React/Babel) non si è caricato — controlla la connessione.');
+    }
+  }, 4000);
+</script>
 
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useCallback } = React;
