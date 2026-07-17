@@ -76,12 +76,12 @@ const DEF_S = {
   pesoConfermato:false, giorniProgrammati:[0,1,3,4],
   kcalTarget:2350, proteineTarget:160, grassiTarget:68, carboTarget:274,
 };
-const DEF = { sessions:[], meals:[], settings:DEF_S };
+const DEF = { sessions:[], meals:[], foodHistory:[], settings:DEF_S };
 
 function loadData(){
   try{
     const r=localStorage.getItem(KEY);
-    if(r){ const p=JSON.parse(r); return {sessions:p.sessions||[],meals:p.meals||[],settings:{...DEF_S,...(p.settings||{})}}; }
+    if(r){ const p=JSON.parse(r); return {sessions:p.sessions||[],meals:p.meals||[],foodHistory:p.foodHistory||[],settings:{...DEF_S,...(p.settings||{})}}; }
   }catch(e){}
   return DEF;
 }
@@ -281,7 +281,11 @@ function SettingsModal({settings,onSave,onExport,onImport,onClose}){
             onChange={e=>{ const f=e.target.files&&e.target.files[0]; if(f) onImport(f); e.target.value=""; }}/>
         </label>
       </div>
-      <div style={{fontSize:11,color:C.faint,marginTop:5}}>Il file JSON include allenamenti e pasti — non la chiave API.</div>
+      <div style={{fontSize:11,color:C.faint,marginTop:5}}>Il file JSON include allenamenti, pasti e alimenti salvati — non la chiave API.</div>
+      <div style={{fontSize:11,color:C.amber,marginTop:6}}>
+        Su iPhone: l'app aggiunta alla schermata Home ha uno spazio dati separato da Safari.
+        Apri sempre l'app dall'icona in Home (non da un tab Safari) per importare/esportare nello stesso posto dove la usi di solito.
+      </div>
     </Field>
 
     <div style={{textAlign:"right",marginTop:6}}>
@@ -500,7 +504,7 @@ function MacroBar({nome,val,target,col}){
 }
 
 // ── Vista Cibo ──
-function FoodView({dateKey,meals,sessions,settings,onSaveMeal,onUpdateMeal,onDeleteMeal}){
+function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpdateMeal,onDeleteMeal}){
   const [testo,setTesto]=useState("");
   const [kcalI,setKcalI]=useState("");
   const [protI,setProtI]=useState("");
@@ -509,6 +513,10 @@ function FoodView({dateKey,meals,sessions,settings,onSaveMeal,onUpdateMeal,onDel
   const [loading,setLoading]=useState(false);
   const [err,setErr]=useState("");
   const [stima,setStima]=useState(null);
+  const [cercaCibo,setCercaCibo]=useState("");
+
+  const [vista,setVista]=useState("giorno"); // "giorno" | "settimana"
+  const [wOffset,setWOffset]=useState(0); // 0 = settimana corrente, -1 = precedente, ecc.
 
   const dayMeals=meals.filter(m=>m.date===dateKey);
   const assunte=dayMeals.reduce((a,m)=>a+(Number(m.kcal)||0),0);
@@ -520,6 +528,37 @@ function FoodView({dateKey,meals,sessions,settings,onSaveMeal,onUpdateMeal,onDel
   const bruciate=riposo+allKcal;
   const bilancio=assunte-bruciate;
   const kcalTarget=Number(settings.kcalTarget)||2400;
+
+  // ── Settimana (ancorata a oggi, navigabile con le frecce; non oltre oggi) ──
+  const oggiRef=new Date(); oggiRef.setHours(0,0,0,0);
+  const todayMonday=new Date(oggiRef); todayMonday.setDate(oggiRef.getDate()-dow(oggiRef));
+  const monday=new Date(todayMonday); monday.setDate(todayMonday.getDate()+wOffset*7);
+  const sunday=new Date(monday); sunday.setDate(monday.getDate()+6);
+  const weekEnd=new Date(Math.min(oggiRef.getTime(),sunday.getTime()));
+  const weekLabel=monday.getFullYear()===sunday.getFullYear()
+    ? `${monday.getDate()} ${MS[monday.getMonth()]} – ${sunday.getDate()} ${MS[sunday.getMonth()]}`
+    : `${monday.getDate()} ${MS[monday.getMonth()]} ${monday.getFullYear()} – ${sunday.getDate()} ${MS[sunday.getMonth()]} ${sunday.getFullYear()}`;
+  const settimana=useMemo(()=>{
+    let wAssunte=0,wBruciate=0,giorni=0;
+    if(monday.getTime()<=weekEnd.getTime()){
+      const cur=new Date(monday);
+      while(fmt(cur)<=fmt(weekEnd)){
+        const k=fmt(cur);
+        const mk=meals.filter(m=>m.date===k).reduce((a,m)=>a+(Number(m.kcal)||0),0);
+        const sk=sessions.filter(s=>s.date===k).reduce((a,s)=>a+(s.calorie||0),0);
+        wAssunte+=mk; wBruciate+=riposo+sk; giorni++;
+        cur.setDate(cur.getDate()+1);
+      }
+    }
+    return {wAssunte,wBruciate,giorni,bil:wAssunte-wBruciate,target:kcalTarget*giorni};
+  },[meals,sessions,wOffset,riposo,kcalTarget]);
+
+  const foodFiltrati=useMemo(()=>{
+    const list=foodHistory||[];
+    const q=cercaCibo.trim().toLowerCase();
+    const f=q?list.filter(n=>n.toLowerCase().includes(q)):list;
+    return f.slice(0,18);
+  },[foodHistory,cercaCibo]);
 
   const stimaAI=async()=>{
     if(!testo.trim()||loading) return;
@@ -563,17 +602,47 @@ function FoodView({dateKey,meals,sessions,settings,onSaveMeal,onUpdateMeal,onDel
   return <div style={{display:"flex",flexDirection:"column",gap:13}}>
 
     {/* Riepilogo kcal */}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8}}>
-      {[["Assunte",assunte,C.text],["Target",kcalTarget,C.muted],
-        ["Bruciate",bruciate,"#7CC5C0"],["Bilancio",bilancio,bilCol]
-      ].map(([l,v,c])=><div key={l} style={box}>
-        <div style={{fontSize:20,fontWeight:800,fontVariantNumeric:"tabular-nums",color:c}}>{Number(v).toLocaleString("it-CH")}</div>
-        <div style={{fontSize:11,color:C.muted,marginTop:2}}>{l} · kcal</div>
-      </div>)}
+    <div style={{display:"flex",gap:7,marginBottom:2}}>
+      <Btn small active={vista==="giorno"} onClick={()=>setVista("giorno")}>Giorno</Btn>
+      <Btn small active={vista==="settimana"} onClick={()=>setVista("settimana")}>Settimana</Btn>
     </div>
-    <div style={{fontSize:11.5,color:C.faint,marginTop:-5}}>
-      Bruciate = BMR ({riposo} kcal) + allenamento ({allKcal} kcal).{bilMsg}
-    </div>
+
+    {vista==="giorno"&&<>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8}}>
+        {[["Assunte",assunte,C.text],["Target",kcalTarget,C.muted],
+          ["Bruciate",bruciate,"#7CC5C0"],["Bilancio",bilancio,bilCol]
+        ].map(([l,v,c])=><div key={l} style={box}>
+          <div style={{fontSize:20,fontWeight:800,fontVariantNumeric:"tabular-nums",color:c}}>{Number(v).toLocaleString("it-CH")}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{l} · kcal</div>
+        </div>)}
+      </div>
+      <div style={{fontSize:11.5,color:C.faint,marginTop:-5}}>
+        Bruciate = BMR ({riposo} kcal) + allenamento ({allKcal} kcal).{bilMsg}
+      </div>
+    </>}
+
+    {vista==="settimana"&&<div style={box}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <Btn small onClick={()=>setWOffset(o=>o-1)}>‹</Btn>
+        <div style={{fontSize:13.5,fontWeight:700}}>{weekLabel}{wOffset===0?" · questa settimana":""}</div>
+        <Btn small onClick={()=>setWOffset(o=>Math.min(0,o+1))} style={{opacity:wOffset>=0?0.4:1}}>›</Btn>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8}}>
+        {[["Assunte",settimana.wAssunte,C.text],
+          ["Target",settimana.target,C.muted],
+          ["Bruciate",settimana.wBruciate,"#7CC5C0"],
+          ["Bilancio",settimana.bil,settimana.bil<-100*settimana.giorni?C.green:settimana.bil>300*settimana.giorni?C.red:C.amber]
+        ].map(([l,v,c])=><div key={l}>
+          <div style={{fontSize:18,fontWeight:800,fontVariantNumeric:"tabular-nums",color:c}}>{Number(v).toLocaleString("it-CH")}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{l} · kcal</div>
+        </div>)}
+      </div>
+      <div style={{fontSize:11,color:C.faint,marginTop:10}}>
+        {settimana.giorni>0
+          ?`Su ${settimana.giorni} giorni considerati · media ${Math.round(settimana.bil/settimana.giorni)} kcal/giorno`
+          :"Nessun giorno di questa settimana è ancora trascorso."}
+      </div>
+    </div>}
 
     {/* Avanzamento kcal */}
     <div style={box}>
@@ -602,6 +671,21 @@ function FoodView({dateKey,meals,sessions,settings,onSaveMeal,onUpdateMeal,onDel
     {/* Form pasto */}
     <div style={box}>
       <div style={{fontSize:13.5,fontWeight:700,marginBottom:10}}>Aggiungi un pasto</div>
+
+      {(foodHistory||[]).length>0&&<div style={{marginBottom:10}}>
+        <input value={cercaCibo} onChange={e=>setCercaCibo(e.target.value)}
+          placeholder="Cerca tra gli alimenti già usati…"
+          style={{...iS,fontSize:13,padding:"7px 10px",marginBottom:7}}/>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {foodFiltrati.map((n,i)=>
+            <button key={i} onClick={()=>setTesto(t=>t.trim()?t.trim()+", "+n:n)} style={{
+              background:C.bg,border:`1px solid ${C.border}`,borderRadius:20,
+              padding:"4px 11px",fontSize:12,color:C.muted,cursor:"pointer",outline:"none"}}>{n}</button>
+          )}
+          {foodFiltrati.length===0&&<span style={{fontSize:12,color:C.faint}}>Nessun alimento trovato.</span>}
+        </div>
+      </div>}
+
       <textarea rows={2} value={testo} onChange={e=>setTesto(e.target.value)}
         style={{...iS,resize:"vertical"}}
         placeholder="Ingredienti — es. 120g pasta, sugo pomodoro, 1 cucchiaio olio, 20g parmigiano"/>
@@ -630,6 +714,7 @@ function FoodView({dateKey,meals,sessions,settings,onSaveMeal,onUpdateMeal,onDel
       </div>}
       <div style={{fontSize:10.5,color:C.faint,marginTop:7}}>
         {settings.apiKey?"Stime AI indicative, modificabili prima di salvare.":"Per la stima AI inserisci la chiave API in ⚙."}
+        {" "}Gli alimenti cercabili sopra si popolano solo dai pasti stimati con l'AI.
       </div>
     </div>
 
@@ -641,7 +726,7 @@ function FoodView({dateKey,meals,sessions,settings,onSaveMeal,onUpdateMeal,onDel
         :<div style={{display:"flex",flexDirection:"column",gap:8}}>
           {dayMeals.map(m=><div key={m.id} style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 11px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-              <span style={{fontSize:13.5,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={m.testo}>{m.testo}</span>
+              <span style={{fontSize:13.5,flex:1,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.4}}>{m.testo}</span>
               <button onClick={()=>onDeleteMeal(m.id)} style={{background:"none",border:"none",color:C.faint,fontSize:18,cursor:"pointer",padding:0,marginLeft:8,lineHeight:1}}>×</button>
             </div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
@@ -684,13 +769,25 @@ function App(){
     setModal(null);
   },[]);
   const remove=useCallback(id=>{ setData(d=>({...d,sessions:d.sessions.filter(s=>s.id!==id)})); setModal(null); },[]);
-  const saveMeal=useCallback(m=>{ setData(d=>({...d,meals:[...(d.meals||[]).filter(x=>x.id!==m.id),m]})); },[]);
+  const saveMeal=useCallback(m=>{
+    setData(d=>{
+      const meals=[...(d.meals||[]).filter(x=>x.id!==m.id),m];
+      let foodHistory=d.foodHistory||[];
+      if(Array.isArray(m.voci)&&m.voci.length){
+        const nomi=m.voci.map(v=>String(v.nome||"").trim()).filter(Boolean);
+        foodHistory=[...nomi.reverse(),...foodHistory];
+        const seen=new Set();
+        foodHistory=foodHistory.filter(n=>{ const k=n.toLowerCase(); if(seen.has(k)) return false; seen.add(k); return true; }).slice(0,80);
+      }
+      return {...d,meals,foodHistory};
+    });
+  },[]);
   const updMeal=useCallback((id,f,v)=>{ setData(d=>({...d,meals:(d.meals||[]).map(m=>m.id===id?{...m,[f]:Number(v)||0}:m)})); },[]);
   const delMeal=useCallback(id=>{ setData(d=>({...d,meals:(d.meals||[]).filter(m=>m.id!==id)})); },[]);
 
   const esporta=()=>{
     const {apiKey,...rs}=data.settings;
-    const blob=new Blob([JSON.stringify({app:"tt",date:new Date().toISOString(),sessions:data.sessions,meals:data.meals||[],settings:rs},null,2)],{type:"application/json"});
+    const blob=new Blob([JSON.stringify({app:"tt",date:new Date().toISOString(),sessions:data.sessions,meals:data.meals||[],foodHistory:data.foodHistory||[],settings:rs},null,2)],{type:"application/json"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
     a.download=`training-${fmt(oggi)}.json`; document.body.appendChild(a); a.click(); a.remove();
   };
@@ -700,7 +797,7 @@ function App(){
         const p=JSON.parse(r.result);
         if(!Array.isArray(p.sessions)) throw new Error("formato non valido");
         if(!window.confirm(`Importare? Sovrascriverà i dati (${p.sessions.length} allenamenti, ${(p.meals||[]).length} pasti).`)) return;
-        setData(d=>({sessions:p.sessions,meals:p.meals||[],settings:{...DEF_S,...(p.settings||{}),apiKey:d.settings.apiKey}}));
+        setData(d=>({sessions:p.sessions,meals:p.meals||[],foodHistory:p.foodHistory||d.foodHistory||[],settings:{...DEF_S,...(p.settings||{}),apiKey:d.settings.apiKey}}));
         setModal(null);
       }catch(e){ window.alert("Importazione fallita: "+e.message); }
     }; r.readAsText(file);
@@ -746,7 +843,7 @@ function App(){
       {view==="anno"&&<YearView anno={anno} sessions={data.sessions}
         onSelectDay={k=>{setSel(k);const d=pd(k);setMese(d.getMonth());setView("mese");}}/>}
       {view==="stats"&&<StatsView anno={anno} sessions={data.sessions} oggi={oggi}/>}
-      {view==="cibo"&&<FoodView dateKey={sel} meals={data.meals||[]} sessions={data.sessions} settings={data.settings}
+      {view==="cibo"&&<FoodView dateKey={sel} meals={data.meals||[]} sessions={data.sessions} settings={data.settings} foodHistory={data.foodHistory||[]}
         onSaveMeal={saveMeal} onUpdateMeal={updMeal} onDeleteMeal={delMeal}/>}
     </div>
     {modal?.t==="session"&&<SessionModal initial={modal.init} peso={data.settings.peso}
