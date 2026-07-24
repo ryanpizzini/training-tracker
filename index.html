@@ -70,13 +70,12 @@ function calcBMR({peso,altezza,eta,sesso}){
   return Math.round(10*p + 6.25*h - 5*e + (sesso==="F"?-161:5));
 }
 
-// Estrae nomi di alimenti da un testo libero, rimuovendo quantità/unità comuni.
-// Approssimativo: usato per popolare la ricerca alimenti quando NON si usa la stima AI
-// (che invece fornisce già nomi puliti tramite "voci").
-function estraiAlimenti(testo){
-  return String(testo||"").split(",").map(s=>s.trim()).filter(Boolean).map(s=>{
-    return s.replace(/^[\d.,]+\s*(g|gr|grammi|kg|ml|l|cucchiai(no|ni)?|fett[ae]|tazz[ae]|pezz[oi]|porzion[ei]|manciat[ae]|cucchiaio)?\s*(di\s+|d[i']\s*)?/i,"").trim();
-  }).filter(s=>s.length>1);
+// Cerca il profilo nutrizionale (per 100g) salvato per un alimento, case-insensitive.
+function trovaProfilo(list,nome){
+  if(!nome) return null;
+  const n=nome.trim().toLowerCase();
+  if(!n) return null;
+  return (list||[]).find(f=>typeof f!=="string" && String(f.nome||"").toLowerCase()===n && f.kcal100!==undefined) || null;
 }
 
 // ── Defaults ── (valori per Ryan: 77kg→74.5kg entro 31 ago, deficit -450 kcal)
@@ -90,7 +89,11 @@ const DEF = { sessions:[], meals:[], foodHistory:[], settings:DEF_S };
 function loadData(){
   try{
     const r=localStorage.getItem(KEY);
-    if(r){ const p=JSON.parse(r); return {sessions:p.sessions||[],meals:p.meals||[],foodHistory:p.foodHistory||[],settings:{...DEF_S,...(p.settings||{})}}; }
+    if(r){
+      const p=JSON.parse(r);
+      const fh=(p.foodHistory||[]).map(f=>typeof f==="string"?{nome:f}:f);
+      return {sessions:p.sessions||[],meals:p.meals||[],foodHistory:fh,settings:{...DEF_S,...(p.settings||{})}};
+    }
   }catch(e){}
   return DEF;
 }
@@ -513,16 +516,30 @@ function MacroBar({nome,val,target,col}){
 }
 
 // ── Vista Cibo ──
-function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpdateMeal,onDeleteMeal}){
-  const [testo,setTesto]=useState("");
+function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpdateMeal,onDeleteMeal,onUpsertFood}){
+  const [alimento,setAlimento]=useState("");
+  const [grammi,setGrammi]=useState("");
   const [kcalI,setKcalI]=useState("");
   const [protI,setProtI]=useState("");
   const [grassiI,setGrassiI]=useState("");
   const [carboI,setCarboI]=useState("");
   const [loading,setLoading]=useState(false);
   const [err,setErr]=useState("");
-  const [stima,setStima]=useState(null);
   const [cercaCibo,setCercaCibo]=useState("");
+
+  const profiloTrovato=trovaProfilo(foodHistory,alimento);
+
+  // Auto-compila kcal/macro dal profilo salvato quando alimento/grammi cambiano — senza toccare l'AI.
+  useEffect(()=>{
+    if(profiloTrovato){
+      const g=Number(grammi)||100;
+      setKcalI(String(Math.round(profiloTrovato.kcal100*g/100)));
+      setProtI(String(Math.round((profiloTrovato.proteine100||0)*g/100)));
+      setGrassiI(String(Math.round((profiloTrovato.grassi100||0)*g/100)));
+      setCarboI(String(Math.round((profiloTrovato.carboidrati100||0)*g/100)));
+    }
+    // eslint-disable-next-line
+  },[alimento,grammi,foodHistory]);
 
   const [vista,setVista]=useState("giorno"); // "giorno" | "settimana"
   const [wOffset,setWOffset]=useState(0); // 0 = settimana corrente, -1 = precedente, ecc.
@@ -573,45 +590,53 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
   },[meals,sessions,wOffset,riposo,kcalTarget,settings.proteineTarget,settings.grassiTarget,settings.carboTarget]);
 
   const foodFiltrati=useMemo(()=>{
-    const list=foodHistory||[];
+    const list=(foodHistory||[]).map(f=>typeof f==="string"?f:f.nome).filter(Boolean);
     const q=cercaCibo.trim().toLowerCase();
     const f=q?list.filter(n=>n.toLowerCase().includes(q)):list;
     return f.slice(0,18);
   },[foodHistory,cercaCibo]);
 
   const stimaAI=async()=>{
-    if(!testo.trim()||loading) return;
+    if(!alimento.trim()||loading) return;
     if(!settings.apiKey){setErr("Inserisci la chiave API Anthropic in ⚙ per la stima AI.");return;}
-    setLoading(true);setErr("");setStima(null);
+    setLoading(true);setErr("");
     try{
       const res=await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",
         headers:{"content-type":"application/json","x-api-key":settings.apiKey,
           "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",
-          content:"Stima calorie e macronutrienti (proteine, grassi, carboidrati in grammi) di questo pasto italiano. "+
-          "Porzioni tipiche adulto se mancano le quantità, segnala nella nota.\n\nPasto: "+testo+"\n\n"+
-          'Rispondi SOLO con JSON valido senza backtick:\n{"kcal":<n>,"proteine":<g>,"grassi":<g>,"carboidrati":<g>,"voci":[{"nome":"<s>","kcal":<n>}],"nota":"<max 15 parole>"}'}]})
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:400,messages:[{role:"user",
+          content:"Fornisci i valori nutrizionali medi PER 100 GRAMMI di questo singolo alimento (in italiano, alimento crudo/cotto come indicato, non un pasto composto): "+alimento.trim()+".\n\n"+
+          'Rispondi SOLO con JSON valido senza backtick:\n{"kcal100":<n>,"proteine100":<g>,"grassi100":<g>,"carboidrati100":<g>}'}]})
       });
       if(!res.ok) throw new Error(res.status===401?"chiave API non valida":"HTTP "+res.status);
       const data=await res.json();
       const txt=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
       const p=JSON.parse(txt.replace(/```json|```/g,"").trim());
-      setKcalI(String(Math.round(Number(p.kcal))||0));
-      setProtI(String(Math.round(Number(p.proteine))||0));
-      setGrassiI(String(Math.round(Number(p.grassi))||0));
-      setCarboI(String(Math.round(Number(p.carboidrati))||0));
-      setStima({voci:Array.isArray(p.voci)?p.voci:[],nota:p.nota||""});
+      const profile={
+        kcal100:Math.round(Number(p.kcal100))||0,
+        proteine100:Math.round(Number(p.proteine100))||0,
+        grassi100:Math.round(Number(p.grassi100))||0,
+        carboidrati100:Math.round(Number(p.carboidrati100))||0,
+      };
+      onUpsertFood(alimento.trim(),profile);
+      const g=Number(grammi)||100;
+      setKcalI(String(Math.round(profile.kcal100*g/100)));
+      setProtI(String(Math.round(profile.proteine100*g/100)));
+      setGrassiI(String(Math.round(profile.grassi100*g/100)));
+      setCarboI(String(Math.round(profile.carboidrati100*g/100)));
     }catch(e){ setErr("Stima non riuscita ("+e.message+"). Inserisci i valori a mano."); }
     setLoading(false);
   };
 
   const salva=()=>{
-    if(!testo.trim()) return;
-    onSaveMeal({id:`m_${Date.now()}`,date:dateKey,testo:testo.trim(),
+    if(!alimento.trim()) return;
+    const g=Number(grammi)||0;
+    const testo=g?`${g} g ${alimento.trim()}`:alimento.trim();
+    onSaveMeal({id:`m_${Date.now()}`,date:dateKey,testo,
       kcal:Number(kcalI)||0,proteine:Number(protI)||0,grassi:Number(grassiI)||0,carboidrati:Number(carboI)||0,
-      voci:stima?.voci||[]});
-    setTesto("");setKcalI("");setProtI("");setGrassiI("");setCarboI("");setStima(null);setErr("");
+      nome:alimento.trim(),grammi:g});
+    setAlimento("");setGrammi("");setKcalI("");setProtI("");setGrassiI("");setCarboI("");setErr("");
   };
 
   const box={background:C.hi,border:`1px solid ${C.border}`,borderRadius:13,padding:15};
@@ -699,7 +724,7 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
 
     {/* Form pasto */}
     <div style={box}>
-      <div style={{fontSize:13.5,fontWeight:700,marginBottom:10}}>Aggiungi un pasto</div>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:10}}>Aggiungi un alimento</div>
 
       {(foodHistory||[]).length>0&&<div style={{marginBottom:10}}>
         <input value={cercaCibo} onChange={e=>setCercaCibo(e.target.value)}
@@ -707,7 +732,7 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
           style={{...iS,fontSize:13,padding:"7px 10px",marginBottom:7}}/>
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           {foodFiltrati.map((n,i)=>
-            <button key={i} onClick={()=>setTesto(t=>t.trim()?t.trim()+", "+n:n)} style={{
+            <button key={i} onClick={()=>setAlimento(n)} style={{
               background:C.bg,border:`1px solid ${C.border}`,borderRadius:20,
               padding:"4px 11px",fontSize:12,color:C.muted,cursor:"pointer",outline:"none"}}>{n}</button>
           )}
@@ -715,14 +740,27 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
         </div>
       </div>}
 
-      <textarea rows={2} value={testo} onChange={e=>setTesto(e.target.value)}
-        style={{...iS,resize:"vertical"}}
-        placeholder="Ingredienti — es. 120g pasta, sugo pomodoro, 1 cucchiaio olio, 20g parmigiano"/>
+      <div style={{display:"flex",gap:8}}>
+        <div style={{flex:2}}>
+          <div style={{fontSize:10.5,color:C.muted,marginBottom:3}}>Alimento</div>
+          <input value={alimento} onChange={e=>setAlimento(e.target.value)} style={iS} placeholder="es. petto di pollo"/>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:10.5,color:C.muted,marginBottom:3}}>Grammi</div>
+          <input type="number" min="0" value={grammi} onChange={e=>setGrammi(e.target.value)} style={iS} placeholder="100"/>
+        </div>
+      </div>
+
+      {alimento.trim()&&(profiloTrovato
+        ?<div style={{fontSize:11.5,color:C.green,marginTop:7}}>✓ Valori noti — aggiornati automaticamente in base ai grammi</div>
+        :<div style={{fontSize:11.5,color:C.faint,marginTop:7}}>Alimento nuovo — usa "Stima con AI" per calcolarlo e salvarlo per le prossime volte</div>
+      )}
+
       <div style={{display:"flex",gap:7,marginTop:9,flexWrap:"wrap"}}>
-        <Btn primary onClick={stimaAI} style={{opacity:loading||!testo.trim()?0.6:1}}>
+        <Btn primary onClick={stimaAI} style={{opacity:loading||!alimento.trim()?0.6:1}}>
           {loading?"In corso…":"Stima con AI"}
         </Btn>
-        <Btn onClick={salva}>Salva pasto</Btn>
+        <Btn onClick={salva}>Salva</Btn>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:9}}>
         <div><div style={{fontSize:10,color:C.muted,marginBottom:3}}>kcal</div>
@@ -735,21 +773,14 @@ function FoodView({dateKey,meals,sessions,settings,foodHistory,onSaveMeal,onUpda
           <input type="number" min="0" value={carboI} onChange={e=>setCarboI(e.target.value)} style={iS}/></div>
       </div>
       {err&&<div style={{fontSize:12.5,color:"#E88",marginTop:7}}>{err}</div>}
-      {stima&&<div style={{marginTop:9,borderTop:`1px solid ${C.border}`,paddingTop:8,fontSize:12.5,color:C.muted,lineHeight:1.7}}>
-        {stima.voci.map((v,i)=><div key={i} style={{display:"flex",justifyContent:"space-between"}}>
-          <span>{v.nome}</span><span style={{fontVariantNumeric:"tabular-nums"}}>{v.kcal} kcal</span>
-        </div>)}
-        {stima.nota&&<div style={{fontSize:11,color:C.faint,marginTop:4}}>Assunzioni: {stima.nota}</div>}
-      </div>}
       <div style={{fontSize:10.5,color:C.faint,marginTop:7}}>
-        {settings.apiKey?"Stime AI indicative, modificabili prima di salvare.":"Per la stima AI inserisci la chiave API in ⚙."}
-        {" "}Ogni alimento che scrivi (con o senza AI) resta salvato per la ricerca rapida qui sopra.
+        {settings.apiKey?"Stime AI per 100g, salvate per essere riusate automaticamente.":"Per la stima AI inserisci la chiave API in ⚙."}
       </div>
     </div>
 
     {/* Lista pasti */}
     <div style={box}>
-      <div style={{fontSize:13.5,fontWeight:700,marginBottom:10}}>Pasti del giorno</div>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:10}}>Alimenti del giorno</div>
       {dayMeals.length===0
         ?<div style={{fontSize:14,color:C.muted}}>Nessun pasto registrato.</div>
         :<div style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -798,18 +829,15 @@ function App(){
     setModal(null);
   },[]);
   const remove=useCallback(id=>{ setData(d=>({...d,sessions:d.sessions.filter(s=>s.id!==id)})); setModal(null); },[]);
-  const saveMeal=useCallback(m=>{
+  const saveMeal=useCallback(m=>{ setData(d=>({...d,meals:[...(d.meals||[]).filter(x=>x.id!==m.id),m]})); },[]);
+  const upsertFood=useCallback((nome,profile)=>{
     setData(d=>{
-      const meals=[...(d.meals||[]).filter(x=>x.id!==m.id),m];
-      let foodHistory=d.foodHistory||[];
-      const nomiAI=Array.isArray(m.voci)?m.voci.map(v=>String(v.nome||"").trim()).filter(Boolean):[];
-      const nomi=nomiAI.length?nomiAI:estraiAlimenti(m.testo);
-      if(nomi.length){
-        foodHistory=[...nomi.slice().reverse(),...foodHistory];
-        const seen=new Set();
-        foodHistory=foodHistory.filter(n=>{ const k=n.toLowerCase(); if(seen.has(k)) return false; seen.add(k); return true; }).slice(0,80);
-      }
-      return {...d,meals,foodHistory};
+      const list=(d.foodHistory||[]).map(f=>typeof f==="string"?{nome:f}:f);
+      const key=nome.trim().toLowerCase();
+      const idx=list.findIndex(f=>String(f.nome||"").toLowerCase()===key);
+      const entry={nome:nome.trim(),...profile};
+      const next=idx>=0?list.map((f,i)=>i===idx?entry:f):[entry,...list].slice(0,120);
+      return {...d,foodHistory:next};
     });
   },[]);
   const updMeal=useCallback((id,f,v)=>{ setData(d=>({...d,meals:(d.meals||[]).map(m=>m.id===id?{...m,[f]:Number(v)||0}:m)})); },[]);
@@ -827,7 +855,10 @@ function App(){
         const p=JSON.parse(r.result);
         if(!Array.isArray(p.sessions)) throw new Error("formato non valido");
         if(!window.confirm(`Importare? Sovrascriverà i dati (${p.sessions.length} allenamenti, ${(p.meals||[]).length} pasti).`)) return;
-        setData(d=>({sessions:p.sessions,meals:p.meals||[],foodHistory:p.foodHistory||d.foodHistory||[],settings:{...DEF_S,...(p.settings||{}),apiKey:d.settings.apiKey}}));
+        setData(d=>{
+          const fh=(p.foodHistory||d.foodHistory||[]).map(f=>typeof f==="string"?{nome:f}:f);
+          return {sessions:p.sessions,meals:p.meals||[],foodHistory:fh,settings:{...DEF_S,...(p.settings||{}),apiKey:d.settings.apiKey}};
+        });
         setModal(null);
       }catch(e){ window.alert("Importazione fallita: "+e.message); }
     }; r.readAsText(file);
@@ -874,7 +905,7 @@ function App(){
         onSelectDay={k=>{setSel(k);const d=pd(k);setMese(d.getMonth());setView("mese");}}/>}
       {view==="stats"&&<StatsView anno={anno} sessions={data.sessions} oggi={oggi}/>}
       {view==="cibo"&&<FoodView dateKey={sel} meals={data.meals||[]} sessions={data.sessions} settings={data.settings} foodHistory={data.foodHistory||[]}
-        onSaveMeal={saveMeal} onUpdateMeal={updMeal} onDeleteMeal={delMeal}/>}
+        onSaveMeal={saveMeal} onUpdateMeal={updMeal} onDeleteMeal={delMeal} onUpsertFood={upsertFood}/>}
     </div>
     {modal?.t==="session"&&<SessionModal initial={modal.init} peso={data.settings.peso}
       onSave={upsert} onDelete={remove} onClose={()=>setModal(null)}/>}
