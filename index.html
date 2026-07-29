@@ -82,7 +82,7 @@ function trovaProfilo(list,nome){
 const DEF_S = {
   peso:77, altezza:180, eta:18, sesso:"M", apiKey:"",
   pesoConfermato:false, giorniProgrammati:[0,1,3,4],
-  kcalTarget:2350, proteineTarget:160, grassiTarget:68, carboTarget:274,
+  kcalTarget:1903, proteineTarget:162, grassiTarget:69, carboTarget:158,
 };
 const DEF = { sessions:[], meals:[], foodHistory:[], settings:DEF_S };
 
@@ -207,14 +207,14 @@ function SettingsModal({settings,onSave,onExport,onImport,onClose}){
   const [eta,setEta]=useState(settings.eta??18);
   const [sesso,setSesso]=useState(settings.sesso||"M");
   const [apiKey,setApiKey]=useState(settings.apiKey||"");
-  const [kcalT,setKcalT]=useState(settings.kcalTarget??2350);
-  const [protT,setProtT]=useState(settings.proteineTarget??160);
-  const [grassiT,setGrassiT]=useState(settings.grassiTarget??68);
-  const [carboT,setCarboT]=useState(settings.carboTarget??274);
+  const [kcalT,setKcalT]=useState(settings.kcalTarget??1903);
+  const [protT,setProtT]=useState(settings.proteineTarget??162);
+  const [grassiT,setGrassiT]=useState(settings.grassiTarget??69);
+  const [carboT,setCarboT]=useState(settings.carboTarget??158);
   const [giorni,setGiorni]=useState(settings.giorniProgrammati);
   const toggle=i=>setGiorni(g=>g.includes(i)?g.filter(x=>x!==i):[...g,i].sort());
   const bmrV=calcBMR({peso,altezza:alt,eta,sesso});
-  const tdeeV=Math.round(bmrV*1.55);
+  const tdeeV=Math.round(bmrV*1.30);
   const deficit=tdeeV-Number(kcalT);
   const macroKcal=Number(protT)*4+Number(grassiT)*9+Number(carboT)*4;
 
@@ -235,7 +235,7 @@ function SettingsModal({settings,onSave,onExport,onImport,onClose}){
       </Field>
     </div>
     <div style={{fontSize:12,color:C.faint,margin:"-6px 0 14px"}}>
-      BMR: {bmrV} kcal · TDEE (att. moderata ×1.55): {tdeeV} kcal
+      BMR: {bmrV} kcal · TDEE (BMR +30% TID/attività, fonte Project Invictus): {tdeeV} kcal
     </div>
 
     <Field label="Obiettivo kcal/giorno">
@@ -304,8 +304,8 @@ function SettingsModal({settings,onSave,onExport,onImport,onClose}){
       <Btn primary onClick={()=>onSave({
         peso:Number(peso)||77, altezza:Number(alt)||180, eta:Number(eta)||18, sesso,
         apiKey:apiKey.trim(), pesoConfermato:true,
-        kcalTarget:Number(kcalT)||2350,
-        proteineTarget:Number(protT)||160, grassiTarget:Number(grassiT)||68, carboTarget:Number(carboT)||274,
+        kcalTarget:Number(kcalT)||1903,
+        proteineTarget:Number(protT)||162, grassiTarget:Number(grassiT)||69, carboTarget:Number(carboT)||158,
         giorniProgrammati:giorni,
       })}>Salva</Btn>
     </div>
