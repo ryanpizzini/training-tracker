@@ -11,7 +11,1050 @@
 <link rel="manifest" href="manifest.json"/>
 <meta name="theme-color" content="#0F1013"/>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script><!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Training Tracker</title>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Training"/>
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230F1013'/%3E%3Ccircle cx='50' cy='50' r='30' fill='none' stroke='%23B9E07E' stroke-width='7'/%3E%3Ccircle cx='50' cy='50' r='10' fill='%235B9BFF'/%3E%3C/svg%3E"/>
+<link rel="manifest" href="manifest.json"/>
+<meta name="theme-color" content="#0F1013"/>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+html,body{margin:0;padding:0;background:#0F1013;overscroll-behavior-y:none}
+*{-webkit-tap-highlight-color:transparent;box-sizing:border-box}
+input,textarea,button{font-family:inherit}
+#err{display:none;position:fixed;inset:0;background:#0F1013;color:#F0A9A9;
+  font-size:14px;padding:20px;z-index:9999;white-space:pre-wrap;overflow:auto}
+</style>
+</head>
+<body>
+<div id="err"></div>
+<div id="root"></div>
+<script>
+window.onerror=function(m,s,l,c,e){
+  var el=document.getElementById('err');el.style.display='block';
+  el.textContent='Errore: '+(e&&e.message||m)+'\n'+(s||'')+':'+l+'\nFai screenshot e mandalo in chat.';
+  return true;
+};
+setTimeout(function(){
+  if(!document.getElementById('root').firstChild&&document.getElementById('err').style.display!=='block'){
+    var el=document.getElementById('err');el.style.display='block';
+    el.textContent='App non avviata in 6s.\nPossibile causa: unpkg.com bloccato (prova con dati mobili, non WiFi aziendale).';
+  }
+},6000);
+</script>
+<script type="text/plain" id="SRC">
+const {useState,useEffect,useMemo,useCallback} = React;
+const KEY = "tt:v3";
+
+// ── Sport ──
+const SP = {
+  boxe:     {label:"Boxe",     col:"#5B9BFF", met:9.5},
+  palestra: {label:"Palestra", col:"#4CC57A", met:5.0},
+  corsa:    {label:"Corsa",    col:"#FF6B9D", met:9.8},
+};
+const GIORNI = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"];
+const MESI   = ["Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno",
+                 "Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"];
+const MS     = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"];
+
+const dow  = d => (d.getDay()+6)%7;
+const fmt  = d => `${d.getFullYear()}-${("0"+(d.getMonth()+1)).slice(-2)}-${("0"+d.getDate()).slice(-2)}`;
+const pd   = s => { const [y,m,g]=s.split("-").map(Number); return new Date(y,m-1,g); };
+
+// ── Calcoli ──
+function autoKcal(sport,dur,dist,kg){
+  const m=Number(dur)||0, w=Number(kg)||0;
+  if(!m||!w) return 0;
+  let met = SP[sport]?.met ?? 6;
+  if(sport==="corsa" && Number(dist)>0){ const v=Number(dist)/(m/60); met=Math.max(6,Math.min(14.5,v*0.97)); }
+  return Math.round(met*w*(m/60));
+}
+function calcBMR({peso,altezza,eta,sesso}){
+  const p=Number(peso)||0,h=Number(altezza)||0,e=Number(eta)||0;
+  if(!p||!h||!e) return 0;
+  return Math.round(10*p + 6.25*h - 5*e + (sesso==="F"?-161:5));
+}
+
+// Cerca il profilo nutrizionale (per 100g) salvato per un alimento, case-insensitive.
+function trovaProfilo(list,nome){
+  if(!nome) return null;
+  const n=nome.trim().toLowerCase();
+  if(!n) return null;
+  return (list||[]).find(f=>typeof f!=="string" && String(f.nome||"").toLowerCase()===n && f.kcal100!==undefined) || null;
+}
+
+// ── Defaults ── (valori per Ryan: 77kg→74.5kg entro 31 ago, deficit -450 kcal)
+const DEF_S = {
+  peso:77, altezza:180, eta:18, sesso:"M", apiKey:"",
+  pesoConfermato:false, giorniProgrammati:[0,1,3,4],
+  kcalTarget:1903, proteineTarget:162, grassiTarget:69, carboTarget:158,
+};
+// Stima approssimativa delle kcal bruciate camminando (0.0005 kcal per passo per kg — indicativa).
+function kcalPassi(passi,peso){
+  const n=Number(passi)||0,p=Number(peso)||70;
+  return Math.round(n*p*0.0005);
+}
+function fmtPassi(n){
+  const v=Number(n)||0;
+  return v>=1000?(v/1000).toFixed(v%1000===0?0:1)+"k":String(v);
+}
+
+const DEF = { sessions:[], meals:[], foodHistory:[], passi:{}, settings:DEF_S };
+
+function loadData(){
+  try{
+    const r=localStorage.getItem(KEY);
+    if(r){
+      const p=JSON.parse(r);
+      const fh=(p.foodHistory||[]).map(f=>typeof f==="string"?{nome:f}:f);
+      return {sessions:p.sessions||[],meals:p.meals||[],foodHistory:fh,passi:p.passi||{},settings:{...DEF_S,...(p.settings||{})}};
+    }
+  }catch(e){}
+  return DEF;
+}
+function saveData(d){ try{ localStorage.setItem(KEY,JSON.stringify(d)); }catch(e){} }
+
+// ── Colori ──
+const C = {
+  bg:"#0F1013", card:"#17181D", hi:"#1D1E25", border:"#26272E",
+  text:"#ECEDEF", muted:"#8A8D97", faint:"#5A5D66",
+  green:"#B9E07E", red:"#F0A9A9", amber:"#C9A24B", yellow:"#E8C547",
+};
+
+// ── UI atoms ──
+const iS = {
+  width:"100%", background:C.bg, color:C.text,
+  border:`1px solid ${C.border}`, borderRadius:10,
+  padding:"10px 12px", fontSize:15, outline:"none",
+};
+
+function Btn({children,onClick,active,primary,small,style,title}){
+  return <button onClick={onClick} title={title} style={{
+    background: primary?C.text : active?C.hi : "transparent",
+    color: primary?"#101014" : C.text,
+    border: `1px solid ${(active||primary)?C.text+"33":C.border}`,
+    borderRadius:10, padding:small?"5px 10px":"9px 16px",
+    fontSize:small?13:14.5, fontWeight:primary?700:500,
+    cursor:"pointer", outline:"none", ...style
+  }}>{children}</button>;
+}
+
+function Field({label,children}){
+  return <label style={{display:"block",marginBottom:14}}>
+    <div style={{fontSize:12.5,color:C.muted,marginBottom:6}}>{label}</div>
+    {children}
+  </label>;
+}
+
+function Modal({title,onClose,children}){
+  return <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.65)",
+    display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,padding:14}}>
+    <div onClick={e=>e.stopPropagation()} style={{background:C.card,border:`1px solid ${C.border}`,
+      borderRadius:16,width:"100%",maxWidth:440,maxHeight:"90vh",overflowY:"auto",padding:20}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h2 style={{margin:0,fontSize:17,fontWeight:700}}>{title}</h2>
+        <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,fontSize:22,cursor:"pointer",lineHeight:1}}>×</button>
+      </div>
+      {children}
+    </div>
+  </div>;
+}
+
+// ── Modale sessione ──
+function SessionModal({initial,peso,onSave,onDelete,onClose}){
+  const [sport,setSport]=useState(initial.sport||"boxe");
+  const [date,setDate]=useState(initial.date);
+  const [dur,setDur]=useState(initial.durata??60);
+  const [dist,setDist]=useState(initial.distanza??"");
+  const [note,setNote]=useState(initial.note||"");
+  const [manual,setManual]=useState(!!initial.calorieManual);
+  const [kcal,setKcal]=useState(initial.calorie??autoKcal(initial.sport||"boxe",initial.durata??60,initial.distanza,peso));
+  const auto=autoKcal(sport,dur,dist,peso);
+  useEffect(()=>{ if(!manual) setKcal(auto); },[auto,manual]);
+  const salva=()=>{
+    if(!date||!Number(dur)) return;
+    onSave({id:initial.id||`s_${Date.now()}`,date,sport,durata:Number(dur),
+      distanza:sport==="corsa"&&dist!==""?Number(dist):null,
+      calorie:Number(kcal)||0,calorieManual:manual,note:note.trim()});
+  };
+  return <Modal title={initial.id?"Modifica":"Nuovo allenamento"} onClose={onClose}>
+    <Field label="Sport">
+      <div style={{display:"flex",gap:7}}>
+        {Object.entries(SP).map(([k,v])=>
+          <button key={k} onClick={()=>setSport(k)} style={{flex:1,padding:"9px 0",borderRadius:10,cursor:"pointer",
+            fontSize:13.5,fontWeight:600,outline:"none",
+            background:sport===k?v.col+"22":"transparent",color:sport===k?v.col:C.muted,
+            border:`1px solid ${sport===k?v.col:C.border}`}}>{v.label}</button>
+        )}
+      </div>
+    </Field>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+      <Field label="Data"><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={iS}/></Field>
+      <Field label="Durata (min)"><input type="number" min="1" value={dur} onChange={e=>setDur(e.target.value)} style={iS}/></Field>
+    </div>
+    {sport==="corsa"&&<Field label="Distanza (km)">
+      <input type="number" min="0" step="0.1" value={dist} onChange={e=>setDist(e.target.value)} style={iS} placeholder="es. 8.5"/>
+    </Field>}
+    <Field label={manual?"Calorie (manuale)":"Calorie (automatico)"}>
+      <div style={{display:"flex",gap:7,alignItems:"center"}}>
+        <input type="number" min="0" value={kcal}
+          onChange={e=>{setKcal(e.target.value);setManual(true);}}
+          style={{...iS,borderColor:manual?C.amber:C.border}}/>
+        {manual&&<Btn small onClick={()=>{setManual(false);setKcal(auto);}}>↺ Auto</Btn>}
+      </div>
+      <div style={{fontSize:11.5,color:C.faint,marginTop:4}}>Stima: {auto} kcal (MET × {peso}kg × {Math.round(Number(dur)||0)}min)</div>
+    </Field>
+    <Field label="Note">
+      <textarea rows={2} value={note} onChange={e=>setNote(e.target.value)}
+        style={{...iS,resize:"vertical"}} placeholder="sparring, gambe, fartlek…"/>
+    </Field>
+    <div style={{display:"flex",justifyContent:"space-between",marginTop:4}}>
+      {initial.id?<Btn onClick={()=>onDelete(initial.id)} style={{color:"#E88"}}>Elimina</Btn>:<span/>}
+      <Btn primary onClick={salva}>Salva</Btn>
+    </div>
+  </Modal>;
+}
+
+// ── Modale impostazioni ──
+function SettingsModal({settings,onSave,onExport,onImport,onClose}){
+  const [peso,setPeso]=useState(settings.peso);
+  const [alt,setAlt]=useState(settings.altezza??180);
+  const [eta,setEta]=useState(settings.eta??18);
+  const [sesso,setSesso]=useState(settings.sesso||"M");
+  const [apiKey,setApiKey]=useState(settings.apiKey||"");
+  const [kcalT,setKcalT]=useState(settings.kcalTarget??1903);
+  const [protT,setProtT]=useState(settings.proteineTarget??162);
+  const [grassiT,setGrassiT]=useState(settings.grassiTarget??69);
+  const [carboT,setCarboT]=useState(settings.carboTarget??158);
+  const [giorni,setGiorni]=useState(settings.giorniProgrammati);
+  const toggle=i=>setGiorni(g=>g.includes(i)?g.filter(x=>x!==i):[...g,i].sort());
+  const bmrV=calcBMR({peso,altezza:alt,eta,sesso});
+  const tdeeV=Math.round(bmrV*1.30);
+  const deficit=tdeeV-Number(kcalT);
+  const macroKcal=Number(protT)*4+Number(grassiT)*9+Number(carboT)*4;
+
+  return <Modal title="Impostazioni" onClose={onClose}>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+      <Field label="Peso (kg)"><input type="number" min="30" max="250" value={peso} onChange={e=>setPeso(e.target.value)} style={iS}/></Field>
+      <Field label="Altezza (cm)"><input type="number" min="100" max="230" value={alt} onChange={e=>setAlt(e.target.value)} style={iS}/></Field>
+      <Field label="Età"><input type="number" min="10" max="100" value={eta} onChange={e=>setEta(e.target.value)} style={iS}/></Field>
+      <Field label="Sesso">
+        <div style={{display:"flex",gap:6}}>
+          {[["M","M"],["F","F"]].map(([k,l])=>
+            <button key={k} onClick={()=>setSesso(k)} style={{flex:1,padding:"10px 0",borderRadius:10,cursor:"pointer",
+              fontSize:14,fontWeight:600,outline:"none",
+              background:sesso===k?C.text:"transparent",color:sesso===k?"#101014":C.muted,
+              border:`1px solid ${sesso===k?C.text:C.border}`}}>{l}</button>
+          )}
+        </div>
+      </Field>
+    </div>
+    <div style={{fontSize:12,color:C.faint,margin:"-6px 0 14px"}}>
+      BMR: {bmrV} kcal · TDEE (BMR +30% TID/attività, fonte Project Invictus): {tdeeV} kcal
+    </div>
+
+    <Field label="Obiettivo kcal/giorno">
+      <input type="number" min="800" max="6000" value={kcalT} onChange={e=>setKcalT(e.target.value)} style={iS}/>
+      <div style={{fontSize:12,color:deficit>0?C.amber:C.green,marginTop:4}}>
+        {deficit>0?`Deficit −${deficit} kcal rispetto al TDEE`:`Surplus +${Math.abs(deficit)} kcal rispetto al TDEE`}
+      </div>
+    </Field>
+
+    <Field label="Target macro giornalieri (g)">
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+        <div>
+          <div style={{fontSize:11,color:"#5B9BFF",marginBottom:3}}>Proteine</div>
+          <input type="number" min="0" value={protT} onChange={e=>setProtT(e.target.value)} style={iS}/>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:"#FF6B9D",marginBottom:3}}>Grassi</div>
+          <input type="number" min="0" value={grassiT} onChange={e=>setGrassiT(e.target.value)} style={iS}/>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:"#4CC57A",marginBottom:3}}>Carboidrati</div>
+          <input type="number" min="0" value={carboT} onChange={e=>setCarboT(e.target.value)} style={iS}/>
+        </div>
+      </div>
+      <div style={{fontSize:11.5,color:C.faint,marginTop:5}}>
+        Totale dai macro: {macroKcal} kcal (obiettivo: {Number(kcalT)} kcal)
+      </div>
+    </Field>
+
+    <Field label="Chiave API Anthropic (stima AI calorie pasti)">
+      <input type="password" value={apiKey} autoComplete="off"
+        onChange={e=>setApiKey(e.target.value)} style={iS} placeholder="sk-ant-…"/>
+      <div style={{fontSize:11.5,color:C.faint,marginTop:4}}>Salvata solo su questo dispositivo, mai su GitHub.</div>
+    </Field>
+
+    <Field label="Giorni di allenamento programmati">
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        {GIORNI.map((g,i)=>
+          <button key={g} onClick={()=>toggle(i)} style={{padding:"7px 11px",borderRadius:9,cursor:"pointer",
+            fontSize:13,fontWeight:600,outline:"none",
+            background:giorni.includes(i)?C.text:"transparent",
+            color:giorni.includes(i)?"#101014":C.muted,
+            border:`1px solid ${giorni.includes(i)?C.text:C.border}`}}>{g}</button>
+        )}
+      </div>
+    </Field>
+
+    <Field label="Backup dati">
+      <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+        <Btn small onClick={onExport}>⬇ Esporta</Btn>
+        <label style={{padding:"5px 10px",borderRadius:9,cursor:"pointer",fontSize:13,
+          color:C.text,border:`1px solid ${C.border}`,display:"inline-block"}}>
+          ⬆ Importa
+          <input type="file" accept=".json" style={{display:"none"}}
+            onChange={e=>{ const f=e.target.files&&e.target.files[0]; if(f) onImport(f); e.target.value=""; }}/>
+        </label>
+      </div>
+      <div style={{fontSize:11,color:C.faint,marginTop:5}}>Il file JSON include allenamenti, pasti e alimenti salvati — non la chiave API.</div>
+      <div style={{fontSize:11,color:C.amber,marginTop:6}}>
+        Su iPhone: l'app aggiunta alla schermata Home ha uno spazio dati separato da Safari.
+        Apri sempre l'app dall'icona in Home (non da un tab Safari) per importare/esportare nello stesso posto dove la usi di solito.
+      </div>
+    </Field>
+
+    <div style={{textAlign:"right",marginTop:6}}>
+      <Btn primary onClick={()=>onSave({
+        peso:Number(peso)||77, altezza:Number(alt)||180, eta:Number(eta)||18, sesso,
+        apiKey:apiKey.trim(), pesoConfermato:true,
+        kcalTarget:Number(kcalT)||1903,
+        proteineTarget:Number(protT)||162, grassiTarget:Number(grassiT)||69, carboTarget:Number(carboT)||158,
+        giorniProgrammati:giorni,
+      })}>Salva</Btn>
+    </div>
+  </Modal>;
+}
+
+// ── Vista Mese ──
+function MonthView({anno,mese,sessions,settings,passi,selected,onSelect,oggi}){
+  const first=new Date(anno,mese,1);
+  const pad=dow(first);
+  const nDays=new Date(anno,mese+1,0).getDate();
+  const byDate=useMemo(()=>{ const m={}; for(const s of sessions)(m[s.date]||=[]).push(s); return m; },[sessions]);
+  const cells=[];
+  for(let i=0;i<pad;i++) cells.push({d:new Date(anno,mese,i-pad+1),out:true});
+  for(let g=1;g<=nDays;g++) cells.push({d:new Date(anno,mese,g),out:false});
+  const pLabel=settings.giorniProgrammati.map(i=>GIORNI[i].toLowerCase()).join("/");
+  return <div>
+    <div style={{display:"flex",gap:12,flexWrap:"wrap",fontSize:12,color:C.muted,marginBottom:11}}>
+      <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:C.green,marginRight:5}}/>Allenato</span>
+      <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:C.red,marginRight:5}}/>Saltato ({pLabel})</span>
+      <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:C.yellow,marginRight:5}}/>Passi da inserire</span>
+      <span style={{marginLeft:"auto",display:"flex",gap:10}}>
+        {Object.values(SP).map(s=><span key={s.label}>
+          <span style={{display:"inline-block",width:8,height:8,borderRadius:8,background:s.col,marginRight:4}}/>{s.label}
+        </span>)}
+      </span>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:5}}>
+      {GIORNI.map(g=><div key={g} style={{textAlign:"center",fontSize:11,color:C.faint,padding:"3px 0"}}>{g}</div>)}
+      {cells.map(({d,out},i)=>{
+        const key=fmt(d);
+        const sess=byDate[key]||[];
+        const trained=sess.length>0;
+        const sched=settings.giorniProgrammati.includes(dow(d));
+        const past=key<fmt(oggi);
+        const pastOrOggi=key<=fmt(oggi);
+        const skip=!out&&sched&&past&&!trained;
+        const isToday=key===fmt(oggi);
+        const isSel=key===selected;
+        const passiVal=(passi||{})[key];
+        const mancaPassi=!out&&pastOrOggi&&!passiVal;
+        let bg="transparent",fg=out?C.faint:C.text,brd=C.border;
+        if(!out&&trained){bg=C.green;fg="#1E2B0E";brd=C.green;}
+        else if(skip){bg=C.red;fg="#3A1010";brd=C.red;}
+        if(mancaPassi){bg=C.yellow;fg="#3A2E0A";brd=C.yellow;}
+        if(isSel) brd="#6FA3FF";
+        return <button key={i} onClick={()=>!out&&onSelect(key)} style={{
+          minHeight:64,borderRadius:8,padding:"5px 6px",textAlign:"left",
+          background:bg,color:fg,cursor:out?"default":"pointer",outline:"none",
+          border:`${(isToday||isSel)?2:1}px solid ${isToday&&!isSel?"#3D66B8":brd}`,
+          opacity:out?0.28:1}}>
+          <div style={{fontSize:12.5,fontWeight:600}}>{d.getDate()}</div>
+          <div style={{display:"flex",gap:3,marginTop:4,flexWrap:"wrap"}}>
+            {sess.map(s=><span key={s.id} style={{width:7,height:7,borderRadius:7,background:SP[s.sport].col}}/>)}
+          </div>
+          {mancaPassi&&<div style={{fontSize:9,fontWeight:700,marginTop:3}}>passi</div>}
+          {!mancaPassi&&passiVal>0&&<div style={{fontSize:8.5,marginTop:3,lineHeight:1.3,opacity:0.85}}>
+            {fmtPassi(passiVal)}<br/>{kcalPassi(passiVal,settings.peso)}kcal
+          </div>}
+        </button>;
+      })}
+    </div>
+  </div>;
+}
+
+function DayDetail({dateKey,sessions,onAdd,onEdit}){
+  const list=sessions.filter(s=>s.date===dateKey);
+  const d=pd(dateKey);
+  return <div style={{marginTop:16,borderTop:`1px solid ${C.border}`,paddingTop:13}}>
+    <div style={{fontSize:13,color:C.muted,marginBottom:9}}>
+      {GIORNI[dow(d)]} {d.getDate()} {MESI[d.getMonth()].toLowerCase()}
+    </div>
+    {list.length===0
+      ?<div style={{color:C.muted,fontSize:14}}>Nessun allenamento. <button onClick={onAdd}
+          style={{background:"none",border:"none",color:"#6FA3FF",cursor:"pointer",fontSize:14,padding:0}}>Aggiungi +</button></div>
+      :<div style={{display:"flex",flexDirection:"column",gap:7}}>
+        {list.map(s=><button key={s.id} onClick={()=>onEdit(s)} style={{
+          display:"flex",alignItems:"center",gap:10,textAlign:"left",
+          background:C.hi,border:`1px solid ${C.border}`,borderRadius:10,
+          padding:"9px 12px",cursor:"pointer",color:C.text,outline:"none"}}>
+          <span style={{width:9,height:9,borderRadius:9,background:SP[s.sport].col,flexShrink:0}}/>
+          <span style={{fontWeight:600,minWidth:68}}>{SP[s.sport].label}</span>
+          <span style={{color:C.muted,fontSize:13}}>
+            {s.durata}min{s.distanza?` · ${s.distanza}km`:""} · {s.calorie}kcal{s.calorieManual?" ✎":""}
+          </span>
+          {s.note&&<span style={{color:C.faint,fontSize:12,marginLeft:"auto",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:150}}>{s.note}</span>}
+        </button>)}
+        <button onClick={onAdd} style={{background:"none",border:"none",color:"#6FA3FF",cursor:"pointer",fontSize:13,padding:0,textAlign:"left"}}>+ Aggiungi un altro</button>
+      </div>
+    }
+  </div>;
+}
+
+function PassiBox({dateKey,valore,peso,onSave}){
+  const [v,setV]=useState(valore!==undefined&&valore!==null?String(valore):"");
+  useEffect(()=>{ setV(valore!==undefined&&valore!==null?String(valore):""); },[dateKey,valore]);
+  const kcal=kcalPassi(v,peso);
+  return <div style={{marginTop:10,borderTop:`1px solid ${C.border}`,paddingTop:12,display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+    <div style={{flex:"0 0 140px"}}>
+      <div style={{fontSize:11,color:C.muted,marginBottom:3}}>Passi del giorno</div>
+      <input type="number" min="0" value={v} onChange={e=>setV(e.target.value)} style={iS} placeholder="es. 8000"/>
+    </div>
+    <Btn small onClick={()=>onSave(dateKey,v)}>Salva passi</Btn>
+    {Number(v)>0&&<div style={{fontSize:12,color:C.muted}}>≈ {kcal} kcal stimate (approssimativo)</div>}
+  </div>;
+}
+
+// ── Vista Anno ──
+function YearView({anno,sessions,onSelectDay}){
+  const byDate=useMemo(()=>{
+    const m={}; for(const s of sessions){ if(s.date.startsWith(String(anno))) m[s.date]=(m[s.date]||0)+s.durata; } return m;
+  },[sessions,anno]);
+  const start=new Date(anno,0,1);
+  const gs=new Date(start); gs.setDate(start.getDate()-dow(start));
+  const weeks=[]; const cur=new Date(gs);
+  while(cur.getFullYear()<=anno){
+    const col=[]; for(let r=0;r<7;r++){col.push(new Date(cur));cur.setDate(cur.getDate()+1);}
+    weeks.push(col); if(col[0].getFullYear()>anno) break;
+  }
+  const shade=m=>{ if(!m)return C.hi; if(m<40)return"#3E5230"; if(m<75)return"#6B8A44"; if(m<110)return"#94BC5F"; return C.green; };
+  const totMin=Object.values(byDate).reduce((a,b)=>a+b,0);
+  return <div>
+    <div style={{fontSize:13,color:C.muted,marginBottom:11}}>
+      {Object.keys(byDate).length} giorni · {Math.round(totMin/60*10)/10} ore nel {anno}
+    </div>
+    <div style={{overflowX:"auto",paddingBottom:6}}>
+      <div style={{display:"flex",gap:3}}>
+        <div style={{display:"flex",flexDirection:"column",gap:3,marginRight:4}}>
+          {GIORNI.map((g,i)=><div key={g} style={{height:13,fontSize:9,color:C.faint,lineHeight:"13px"}}>{i%2===0?g:""}</div>)}
+        </div>
+        {weeks.map((col,wi)=><div key={wi} style={{display:"flex",flexDirection:"column",gap:3}}>
+          {col.map((d,di)=>{
+            const iy=d.getFullYear()===anno; const key=fmt(d); const min=byDate[key];
+            return <div key={di} onClick={()=>iy&&onSelectDay(key)}
+              title={iy?`${d.getDate()} ${MS[d.getMonth()]}${min?` · ${min}min`:""}`:""} style={{
+                width:13,height:13,borderRadius:3,background:iy?shade(min):"transparent",
+                cursor:iy&&min?"pointer":"default"}}/>;
+          })}
+        </div>)}
+      </div>
+      <div style={{display:"flex",gap:3,marginTop:5,marginLeft:32}}>
+        {weeks.map((col,wi)=>{
+          const d=col[0]; const prev=wi>0?weeks[wi-1][0]:null;
+          const show=d.getFullYear()===anno&&(!prev||prev.getMonth()!==d.getMonth());
+          return <div key={wi} style={{width:13,fontSize:9,color:C.faint,overflow:"visible",whiteSpace:"nowrap"}}>{show?MS[d.getMonth()]:""}</div>;
+        })}
+      </div>
+    </div>
+  </div>;
+}
+
+// ── Vista Statistiche ──
+function StatsView({anno,sessions,passi,oggi}){
+  const [periodo,setPeriodo]=useState("anno"); // "settimana" | "mese" | "anno"
+  const [wOff,setWOff]=useState(0);
+  const [mOff,setMOff]=useState(0);
+  const sum=(arr,f)=>arr.reduce((a,s)=>a+f(s),0);
+  const ore=arr=>Math.round(sum(arr,s=>s.durata)/60*10)/10;
+
+  const {range,label,canFwd}=useMemo(()=>{
+    if(periodo==="settimana"){
+      const todayMonday=new Date(oggi); todayMonday.setDate(oggi.getDate()-dow(oggi));
+      const monday=new Date(todayMonday); monday.setDate(todayMonday.getDate()+wOff*7);
+      const sunday=new Date(monday); sunday.setDate(monday.getDate()+6);
+      const from=fmt(monday),to=fmt(sunday);
+      const lbl=monday.getFullYear()===sunday.getFullYear()
+        ?`${monday.getDate()} ${MS[monday.getMonth()]} – ${sunday.getDate()} ${MS[sunday.getMonth()]}`
+        :`${monday.getDate()} ${MS[monday.getMonth()]} ${monday.getFullYear()} – ${sunday.getDate()} ${MS[sunday.getMonth()]} ${sunday.getFullYear()}`;
+      return {range:sessions.filter(s=>s.date>=from&&s.date<=to),label:lbl+(wOff===0?" · questa settimana":""),canFwd:wOff<0};
+    }
+    if(periodo==="mese"){
+      const base=new Date(oggi.getFullYear(),oggi.getMonth()+mOff,1);
+      const from=fmt(base);
+      const last=new Date(base.getFullYear(),base.getMonth()+1,0);
+      const to=fmt(last);
+      const lbl=`${MESI[base.getMonth()]} ${base.getFullYear()}`;
+      return {range:sessions.filter(s=>s.date>=from&&s.date<=to),label:lbl+(mOff===0?" · questo mese":""),canFwd:mOff<0};
+    }
+    return {range:sessions.filter(s=>s.date.startsWith(String(anno))),label:String(anno),canFwd:false};
+  },[periodo,wOff,mOff,anno,sessions,oggi]);
+
+  const passiTot=useMemo(()=>{
+    if(periodo==="anno") return Object.entries(passi||{}).filter(([k])=>k.startsWith(String(anno))).reduce((a,[,v])=>a+(Number(v)||0),0);
+    // per settimana/mese: ricava from/to dallo stesso calcolo di range usando le date min/max presenti non è affidabile se range vuoto;
+    // ricalcoliamo qui i confini in modo indipendente
+    if(periodo==="settimana"){
+      const todayMonday=new Date(oggi); todayMonday.setDate(oggi.getDate()-dow(oggi));
+      const monday=new Date(todayMonday); monday.setDate(todayMonday.getDate()+wOff*7);
+      const sunday=new Date(monday); sunday.setDate(monday.getDate()+6);
+      const from=fmt(monday),to=fmt(sunday);
+      return Object.entries(passi||{}).filter(([k])=>k>=from&&k<=to).reduce((a,[,v])=>a+(Number(v)||0),0);
+    }
+    const base=new Date(oggi.getFullYear(),oggi.getMonth()+mOff,1);
+    const from=fmt(base);
+    const to=fmt(new Date(base.getFullYear(),base.getMonth()+1,0));
+    return Object.entries(passi||{}).filter(([k])=>k>=from&&k<=to).reduce((a,[,v])=>a+(Number(v)||0),0);
+  },[periodo,wOff,mOff,anno,passi,oggi]);
+
+  const perSp=Object.keys(SP).map(k=>{
+    const arr=range.filter(s=>s.sport===k);
+    return {k,n:arr.length,ore:ore(arr),kcal:sum(arr,s=>s.calorie),km:sum(arr,s=>s.distanza||0)};
+  });
+  const maxOre=Math.max(1,...perSp.map(p=>p.ore));
+  const weeks=[];
+  const mon=new Date(oggi); mon.setDate(mon.getDate()-dow(oggi));
+  for(let w=7;w>=0;w--){
+    const s=new Date(mon); s.setDate(s.getDate()-w*7);
+    const e=new Date(s); e.setDate(e.getDate()+6);
+    const inW=sessions.filter(x=>x.date>=fmt(s)&&x.date<=fmt(e));
+    weeks.push({label:`${s.getDate()}/${s.getMonth()+1}`,min:sum(inW,x=>x.durata),kcal:sum(inW,x=>x.calorie)});
+  }
+  const maxMin=Math.max(1,...weeks.map(w=>w.min));
+  const box={background:C.hi,border:`1px solid ${C.border}`,borderRadius:13,padding:15};
+  return <div style={{display:"flex",flexDirection:"column",gap:13}}>
+    <div style={{display:"flex",gap:7}}>
+      <Btn small active={periodo==="settimana"} onClick={()=>setPeriodo("settimana")}>Settimana</Btn>
+      <Btn small active={periodo==="mese"} onClick={()=>setPeriodo("mese")}>Mese</Btn>
+      <Btn small active={periodo==="anno"} onClick={()=>setPeriodo("anno")}>Anno</Btn>
+    </div>
+
+    {periodo!=="anno"&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <Btn small onClick={()=>periodo==="settimana"?setWOff(o=>o-1):setMOff(o=>o-1)}>‹</Btn>
+      <div style={{fontSize:13.5,fontWeight:700}}>{label}</div>
+      <Btn small onClick={()=>periodo==="settimana"?setWOff(o=>Math.min(0,o+1)):setMOff(o=>Math.min(0,o+1))} style={{opacity:canFwd?1:0.4}}>›</Btn>
+    </div>}
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8}}>
+      {[["Sessioni",range.length],["Ore totali",ore(range)],
+        ["Calorie",sum(range,s=>s.calorie).toLocaleString("it-CH")],
+        ["Km corsa",Math.round(sum(range,s=>s.distanza||0)*10)/10],
+        ["Passi",passiTot.toLocaleString("it-CH")]
+      ].map(([l,v])=><div key={l} style={box}>
+        <div style={{fontSize:22,fontWeight:800,fontVariantNumeric:"tabular-nums"}}>{v}</div>
+        <div style={{fontSize:11.5,color:C.muted,marginTop:2}}>{l}</div>
+      </div>)}
+    </div>
+    <div style={box}>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:11}}>Per sport — {periodo==="anno"?anno:label}</div>
+      {perSp.map(p=><div key={p.k} style={{marginBottom:11}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:5}}>
+          <span style={{color:SP[p.k].col,fontWeight:600}}>{SP[p.k].label}</span>
+          <span style={{color:C.muted}}>{p.n} sess · {p.ore}h · {p.kcal.toLocaleString("it-CH")}kcal{p.k==="corsa"&&p.km?` · ${Math.round(p.km*10)/10}km`:""}</span>
+        </div>
+        <div style={{height:8,background:C.bg,borderRadius:8}}>
+          <div style={{height:8,width:`${(p.ore/maxOre)*100}%`,background:SP[p.k].col,borderRadius:8,transition:"width .3s"}}/>
+        </div>
+      </div>)}
+    </div>
+    <div style={box}>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:11}}>Ultime 8 settimane (minuti)</div>
+      <div style={{display:"flex",alignItems:"flex-end",gap:6,height:105}}>
+        {weeks.map((w,i)=><div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:5,height:"100%",justifyContent:"flex-end"}}>
+          <div style={{fontSize:10,color:C.muted,fontVariantNumeric:"tabular-nums"}}>{w.min||""}</div>
+          <div style={{width:"100%",maxWidth:30,borderRadius:"4px 4px 2px 2px",
+            height:`${(w.min/maxMin)*80}%`,minHeight:w.min?3:2,background:w.min?"#94BC5F":C.border}}
+            title={`${w.min}min · ${w.kcal}kcal`}/>
+          <div style={{fontSize:9.5,color:C.faint}}>{w.label}</div>
+        </div>)}
+      </div>
+    </div>
+  </div>;
+}
+
+// ── Barra macro ──
+function MacroBar({nome,val,target,col}){
+  const t=Number(target)||0;
+  const pct=t>0?(val/t)*100:0;
+  let stato="—",sc=C.faint,barCol=col;
+  if(t>0){
+    if(pct<70){stato="Bassi ↓";sc=C.amber;barCol=C.amber;}
+    else if(pct>115){stato="Alti ↑";sc=C.red;barCol=C.red;}
+    else{stato="In linea ✓";sc=C.green;}
+  }
+  return <div>
+    <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:5,alignItems:"center"}}>
+      <span style={{color:col,fontWeight:600}}>{nome}</span>
+      <span style={{display:"flex",gap:10,alignItems:"center",color:C.muted}}>
+        <span style={{fontVariantNumeric:"tabular-nums"}}>{Math.round(val)}g / {t||"—"}g</span>
+        <span style={{color:sc,fontWeight:700,fontSize:11.5}}>{stato}</span>
+      </span>
+    </div>
+    <div style={{height:9,background:C.bg,borderRadius:8,overflow:"hidden"}}>
+      <div style={{height:9,width:`${Math.min(100,pct)}%`,background:barCol,borderRadius:8,transition:"width .3s"}}/>
+    </div>
+  </div>;
+}
+
+// ── Vista Cibo ──
+function FoodView({dateKey,meals,sessions,settings,foodHistory,passi,onSaveMeal,onUpdateMeal,onDeleteMeal,onUpsertFood}){
+  const [alimento,setAlimento]=useState("");
+  const [grammi,setGrammi]=useState("");
+  const [kcalI,setKcalI]=useState("");
+  const [protI,setProtI]=useState("");
+  const [grassiI,setGrassiI]=useState("");
+  const [carboI,setCarboI]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState("");
+  const [cercaCibo,setCercaCibo]=useState("");
+
+  const profiloTrovato=trovaProfilo(foodHistory,alimento);
+
+  // Auto-compila kcal/macro dal profilo salvato quando alimento/grammi cambiano — senza toccare l'AI.
+  useEffect(()=>{
+    if(profiloTrovato){
+      const g=Number(grammi)||100;
+      setKcalI(String(Math.round(profiloTrovato.kcal100*g/100)));
+      setProtI(String(Math.round((profiloTrovato.proteine100||0)*g/100)));
+      setGrassiI(String(Math.round((profiloTrovato.grassi100||0)*g/100)));
+      setCarboI(String(Math.round((profiloTrovato.carboidrati100||0)*g/100)));
+    }
+    // eslint-disable-next-line
+  },[alimento,grammi,foodHistory]);
+
+  const [vista,setVista]=useState("giorno"); // "giorno" | "settimana"
+  const [wOffset,setWOffset]=useState(0); // 0 = settimana corrente, -1 = precedente, ecc.
+
+  const dayMeals=meals.filter(m=>m.date===dateKey);
+  const assunte=dayMeals.reduce((a,m)=>a+(Number(m.kcal)||0),0);
+  const protTot=dayMeals.reduce((a,m)=>a+(Number(m.proteine)||0),0);
+  const grassiTot=dayMeals.reduce((a,m)=>a+(Number(m.grassi)||0),0);
+  const carboTot=dayMeals.reduce((a,m)=>a+(Number(m.carboidrati)||0),0);
+  const allKcal=sessions.filter(s=>s.date===dateKey).reduce((a,s)=>a+(s.calorie||0),0);
+  const passiKcal=kcalPassi((passi||{})[dateKey],settings.peso);
+  const riposo=calcBMR(settings);
+  const bruciate=riposo+allKcal+passiKcal;
+  const bilancio=assunte-bruciate;
+  const kcalTarget=Number(settings.kcalTarget)||2400;
+
+  // ── Settimana (ancorata a oggi, navigabile con le frecce; non oltre oggi) ──
+  const oggiRef=new Date(); oggiRef.setHours(0,0,0,0);
+  const todayMonday=new Date(oggiRef); todayMonday.setDate(oggiRef.getDate()-dow(oggiRef));
+  const monday=new Date(todayMonday); monday.setDate(todayMonday.getDate()+wOffset*7);
+  const sunday=new Date(monday); sunday.setDate(monday.getDate()+6);
+  const weekEnd=new Date(Math.min(oggiRef.getTime(),sunday.getTime()));
+  const weekLabel=monday.getFullYear()===sunday.getFullYear()
+    ? `${monday.getDate()} ${MS[monday.getMonth()]} – ${sunday.getDate()} ${MS[sunday.getMonth()]}`
+    : `${monday.getDate()} ${MS[monday.getMonth()]} ${monday.getFullYear()} – ${sunday.getDate()} ${MS[sunday.getMonth()]} ${sunday.getFullYear()}`;
+  const settimana=useMemo(()=>{
+    let wAssunte=0,wBruciate=0,giorni=0,wProt=0,wGrassi=0,wCarbo=0;
+    if(monday.getTime()<=weekEnd.getTime()){
+      const cur=new Date(monday);
+      while(fmt(cur)<=fmt(weekEnd)){
+        const k=fmt(cur);
+        const mDay=meals.filter(m=>m.date===k);
+        const mk=mDay.reduce((a,m)=>a+(Number(m.kcal)||0),0);
+        const sk=sessions.filter(s=>s.date===k).reduce((a,s)=>a+(s.calorie||0),0);
+        const pk=kcalPassi((passi||{})[k],settings.peso);
+        wAssunte+=mk; wBruciate+=riposo+sk+pk; giorni++;
+        wProt+=mDay.reduce((a,m)=>a+(Number(m.proteine)||0),0);
+        wGrassi+=mDay.reduce((a,m)=>a+(Number(m.grassi)||0),0);
+        wCarbo+=mDay.reduce((a,m)=>a+(Number(m.carboidrati)||0),0);
+        cur.setDate(cur.getDate()+1);
+      }
+    }
+    return {
+      wAssunte,wBruciate,giorni,bil:wAssunte-wBruciate,target:kcalTarget*giorni,
+      wProt,wGrassi,wCarbo,
+      protTarget:(Number(settings.proteineTarget)||0)*giorni,
+      grassiTarget:(Number(settings.grassiTarget)||0)*giorni,
+      carboTarget:(Number(settings.carboTarget)||0)*giorni,
+    };
+  },[meals,sessions,passi,wOffset,riposo,kcalTarget,settings.peso,settings.proteineTarget,settings.grassiTarget,settings.carboTarget]);
+
+  const foodFiltrati=useMemo(()=>{
+    const list=(foodHistory||[]).map(f=>typeof f==="string"?f:f.nome).filter(Boolean);
+    const q=cercaCibo.trim().toLowerCase();
+    const f=q?list.filter(n=>n.toLowerCase().includes(q)):list;
+    return f.slice(0,18);
+  },[foodHistory,cercaCibo]);
+
+  const stimaAI=async()=>{
+    if(!alimento.trim()||loading) return;
+    if(!settings.apiKey){setErr("Inserisci la chiave API Anthropic in ⚙ per la stima AI.");return;}
+    setLoading(true);setErr("");
+    try{
+      const res=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"content-type":"application/json","x-api-key":settings.apiKey,
+          "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:400,messages:[{role:"user",
+          content:"Fornisci i valori nutrizionali medi PER 100 GRAMMI di questo singolo alimento (in italiano, alimento crudo/cotto come indicato, non un pasto composto): "+alimento.trim()+".\n\n"+
+          'Rispondi SOLO con JSON valido senza backtick:\n{"kcal100":<n>,"proteine100":<g>,"grassi100":<g>,"carboidrati100":<g>}'}]})
+      });
+      if(!res.ok) throw new Error(res.status===401?"chiave API non valida":"HTTP "+res.status);
+      const data=await res.json();
+      const txt=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+      const p=JSON.parse(txt.replace(/```json|```/g,"").trim());
+      const profile={
+        kcal100:Math.round(Number(p.kcal100))||0,
+        proteine100:Math.round(Number(p.proteine100))||0,
+        grassi100:Math.round(Number(p.grassi100))||0,
+        carboidrati100:Math.round(Number(p.carboidrati100))||0,
+      };
+      onUpsertFood(alimento.trim(),profile);
+      const g=Number(grammi)||100;
+      setKcalI(String(Math.round(profile.kcal100*g/100)));
+      setProtI(String(Math.round(profile.proteine100*g/100)));
+      setGrassiI(String(Math.round(profile.grassi100*g/100)));
+      setCarboI(String(Math.round(profile.carboidrati100*g/100)));
+    }catch(e){ setErr("Stima non riuscita ("+e.message+"). Inserisci i valori a mano."); }
+    setLoading(false);
+  };
+
+  const salva=()=>{
+    if(!alimento.trim()) return;
+    const g=Number(grammi)||0;
+    const testo=g?`${g} g ${alimento.trim()}`:alimento.trim();
+    onSaveMeal({id:`m_${Date.now()}`,date:dateKey,testo,
+      kcal:Number(kcalI)||0,proteine:Number(protI)||0,grassi:Number(grassiI)||0,carboidrati:Number(carboI)||0,
+      nome:alimento.trim(),grammi:g});
+    setAlimento("");setGrammi("");setKcalI("");setProtI("");setGrassiI("");setCarboI("");setErr("");
+  };
+
+  const box={background:C.hi,border:`1px solid ${C.border}`,borderRadius:13,padding:15};
+  const bilCol=bilancio<-100?C.green:bilancio>300?C.red:bilancio>0?C.amber:C.green;
+  const bilMsg=bilancio<-100?" Sei in deficit ✓":bilancio>300?" Surplus, attenzione":bilancio>0?" Leggero surplus":" In target";
+
+  return <div style={{display:"flex",flexDirection:"column",gap:13}}>
+
+    {/* Riepilogo kcal */}
+    <div style={{display:"flex",gap:7,marginBottom:2}}>
+      <Btn small active={vista==="giorno"} onClick={()=>setVista("giorno")}>Giorno</Btn>
+      <Btn small active={vista==="settimana"} onClick={()=>setVista("settimana")}>Settimana</Btn>
+    </div>
+
+    {vista==="giorno"&&<>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8}}>
+        {[["Assunte",assunte,C.text],["Target",kcalTarget,C.muted],
+          ["Bruciate",bruciate,"#7CC5C0"],["Bilancio",bilancio,bilCol]
+        ].map(([l,v,c])=><div key={l} style={box}>
+          <div style={{fontSize:20,fontWeight:800,fontVariantNumeric:"tabular-nums",color:c}}>{Number(v).toLocaleString("it-CH")}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{l} · kcal</div>
+        </div>)}
+      </div>
+      <div style={{fontSize:11.5,color:C.faint,marginTop:-5}}>
+        Bruciate = BMR ({riposo} kcal) + allenamento ({allKcal} kcal) + passi ({passiKcal} kcal).{bilMsg}
+      </div>
+    </>}
+
+    {vista==="settimana"&&<div style={box}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <Btn small onClick={()=>setWOffset(o=>o-1)}>‹</Btn>
+        <div style={{fontSize:13.5,fontWeight:700}}>{weekLabel}{wOffset===0?" · questa settimana":""}</div>
+        <Btn small onClick={()=>setWOffset(o=>Math.min(0,o+1))} style={{opacity:wOffset>=0?0.4:1}}>›</Btn>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8}}>
+        {[["Assunte",settimana.wAssunte,C.text],
+          ["Target",settimana.target,C.muted],
+          ["Bruciate",settimana.wBruciate,"#7CC5C0"],
+          ["Bilancio",settimana.bil,settimana.bil<-100*settimana.giorni?C.green:settimana.bil>300*settimana.giorni?C.red:C.amber]
+        ].map(([l,v,c])=><div key={l}>
+          <div style={{fontSize:18,fontWeight:800,fontVariantNumeric:"tabular-nums",color:c}}>{Number(v).toLocaleString("it-CH")}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{l} · kcal</div>
+        </div>)}
+      </div>
+      <div style={{fontSize:11,color:C.faint,marginTop:10}}>
+        {settimana.giorni>0
+          ?`Su ${settimana.giorni} giorni considerati · media ${Math.round(settimana.bil/settimana.giorni)} kcal/giorno`
+          :"Nessun giorno di questa settimana è ancora trascorso."}
+      </div>
+    </div>}
+
+    {/* Avanzamento kcal */}
+    <div style={box}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>
+        Calorie vs target {vista==="settimana"?"— settimana":"— oggi"}
+      </div>
+      <div style={{height:11,background:C.bg,borderRadius:8,overflow:"hidden",marginBottom:5}}>
+        <div style={{height:11,borderRadius:8,transition:"width .3s",
+          width:`${Math.min(100,((vista==="settimana"?settimana.wAssunte:assunte)/(vista==="settimana"?(settimana.target||1):kcalTarget))*100)}%`,
+          background:(vista==="settimana"?settimana.wAssunte:assunte)>(vista==="settimana"?settimana.target:kcalTarget)*1.1?C.red
+            :(vista==="settimana"?settimana.wAssunte:assunte)>(vista==="settimana"?settimana.target:kcalTarget)*0.85?C.green:C.amber}}/>
+      </div>
+      <div style={{fontSize:12,color:C.muted}}>
+        {vista==="settimana"
+          ?`${settimana.target?Math.round((settimana.wAssunte/settimana.target)*100):0}% · ${settimana.wAssunte} / ${settimana.target} kcal`
+          :`${Math.round((assunte/kcalTarget)*100)}% · ${assunte} / ${kcalTarget} kcal`}
+      </div>
+    </div>
+
+    {/* Macro */}
+    <div style={box}>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:13}}>
+        Macronutrienti {vista==="settimana"?"— settimana":"— oggi"}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <MacroBar nome="Proteine" val={vista==="settimana"?settimana.wProt:protTot} target={vista==="settimana"?settimana.protTarget:settings.proteineTarget} col="#5B9BFF"/>
+        <MacroBar nome="Grassi" val={vista==="settimana"?settimana.wGrassi:grassiTot} target={vista==="settimana"?settimana.grassiTarget:settings.grassiTarget} col="#FF6B9D"/>
+        <MacroBar nome="Carboidrati" val={vista==="settimana"?settimana.wCarbo:carboTot} target={vista==="settimana"?settimana.carboTarget:settings.carboTarget} col="#4CC57A"/>
+      </div>
+      <div style={{fontSize:11,color:C.faint,marginTop:11}}>
+        &lt;70%: bassi · 70–115%: in linea · &gt;115%: alti · Target modificabili in ⚙
+        {vista==="settimana"&&settimana.giorni===0&&" · Nessun giorno ancora trascorso in questa settimana."}
+      </div>
+    </div>
+
+    {/* Form pasto */}
+    <div style={box}>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:10}}>Aggiungi un alimento</div>
+
+      {(foodHistory||[]).length>0&&<div style={{marginBottom:10}}>
+        <input value={cercaCibo} onChange={e=>setCercaCibo(e.target.value)}
+          placeholder="Cerca tra gli alimenti già usati…"
+          style={{...iS,fontSize:13,padding:"7px 10px",marginBottom:7}}/>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {foodFiltrati.map((n,i)=>
+            <button key={i} onClick={()=>setAlimento(n)} style={{
+              background:C.bg,border:`1px solid ${C.border}`,borderRadius:20,
+              padding:"4px 11px",fontSize:12,color:C.muted,cursor:"pointer",outline:"none"}}>{n}</button>
+          )}
+          {foodFiltrati.length===0&&<span style={{fontSize:12,color:C.faint}}>Nessun alimento trovato.</span>}
+        </div>
+      </div>}
+
+      <div style={{display:"flex",gap:8}}>
+        <div style={{flex:2}}>
+          <div style={{fontSize:10.5,color:C.muted,marginBottom:3}}>Alimento</div>
+          <input value={alimento} onChange={e=>setAlimento(e.target.value)} style={iS} placeholder="es. petto di pollo"/>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:10.5,color:C.muted,marginBottom:3}}>Grammi</div>
+          <input type="number" min="0" value={grammi} onChange={e=>setGrammi(e.target.value)} style={iS} placeholder="100"/>
+        </div>
+      </div>
+
+      {alimento.trim()&&(profiloTrovato
+        ?<div style={{fontSize:11.5,color:C.green,marginTop:7}}>✓ Valori noti — aggiornati automaticamente in base ai grammi</div>
+        :<div style={{fontSize:11.5,color:C.faint,marginTop:7}}>Alimento nuovo — usa "Stima con AI" per calcolarlo e salvarlo per le prossime volte</div>
+      )}
+
+      <div style={{display:"flex",gap:7,marginTop:9,flexWrap:"wrap"}}>
+        <Btn primary onClick={stimaAI} style={{opacity:loading||!alimento.trim()?0.6:1}}>
+          {loading?"In corso…":"Stima con AI"}
+        </Btn>
+        <Btn onClick={salva}>Salva</Btn>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:9}}>
+        <div><div style={{fontSize:10,color:C.muted,marginBottom:3}}>kcal</div>
+          <input type="number" min="0" value={kcalI} onChange={e=>setKcalI(e.target.value)} style={iS}/></div>
+        <div><div style={{fontSize:10,color:"#5B9BFF",marginBottom:3}}>Proteine g</div>
+          <input type="number" min="0" value={protI} onChange={e=>setProtI(e.target.value)} style={iS}/></div>
+        <div><div style={{fontSize:10,color:"#FF6B9D",marginBottom:3}}>Grassi g</div>
+          <input type="number" min="0" value={grassiI} onChange={e=>setGrassiI(e.target.value)} style={iS}/></div>
+        <div><div style={{fontSize:10,color:"#4CC57A",marginBottom:3}}>Carbo g</div>
+          <input type="number" min="0" value={carboI} onChange={e=>setCarboI(e.target.value)} style={iS}/></div>
+      </div>
+      {err&&<div style={{fontSize:12.5,color:"#E88",marginTop:7}}>{err}</div>}
+      <div style={{fontSize:10.5,color:C.faint,marginTop:7}}>
+        {settings.apiKey?"Stime AI per 100g, salvate per essere riusate automaticamente.":"Per la stima AI inserisci la chiave API in ⚙."}
+      </div>
+    </div>
+
+    {/* Lista pasti */}
+    <div style={box}>
+      <div style={{fontSize:13.5,fontWeight:700,marginBottom:10}}>Alimenti del giorno</div>
+      {dayMeals.length===0
+        ?<div style={{fontSize:14,color:C.muted}}>Nessun pasto registrato.</div>
+        :<div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {dayMeals.map(m=><div key={m.id} style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 11px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <span style={{fontSize:13.5,flex:1,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.4}}>{m.testo}</span>
+              <button onClick={()=>onDeleteMeal(m.id)} style={{background:"none",border:"none",color:C.faint,fontSize:18,cursor:"pointer",padding:0,marginLeft:8,lineHeight:1}}>×</button>
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+              <input type="number" min="0" value={m.kcal} onChange={e=>onUpdateMeal(m.id,"kcal",e.target.value)}
+                style={{...iS,width:70,padding:"5px 7px",fontSize:12}}/>
+              <span style={{fontSize:11,color:C.muted}}>kcal</span>
+              <input type="number" min="0" value={m.proteine||0} onChange={e=>onUpdateMeal(m.id,"proteine",e.target.value)}
+                style={{...iS,width:52,padding:"5px 7px",fontSize:12,borderColor:"#5B9BFF44"}}/>
+              <span style={{fontSize:11,color:"#5B9BFF"}}>P</span>
+              <input type="number" min="0" value={m.grassi||0} onChange={e=>onUpdateMeal(m.id,"grassi",e.target.value)}
+                style={{...iS,width:52,padding:"5px 7px",fontSize:12,borderColor:"#FF6B9D44"}}/>
+              <span style={{fontSize:11,color:"#FF6B9D"}}>G</span>
+              <input type="number" min="0" value={m.carboidrati||0} onChange={e=>onUpdateMeal(m.id,"carboidrati",e.target.value)}
+                style={{...iS,width:52,padding:"5px 7px",fontSize:12,borderColor:"#4CC57A44"}}/>
+              <span style={{fontSize:11,color:"#4CC57A"}}>C</span>
+            </div>
+          </div>)}
+        </div>
+      }
+    </div>
+  </div>;
+}
+
+// ── App ──
+function App(){
+  const oggi=new Date();
+  const [data,setData]=useState(()=>loadData());
+  const [view,setView]=useState("mese");
+  const [anno,setAnno]=useState(oggi.getFullYear());
+  const [mese,setMese]=useState(oggi.getMonth());
+  const [sel,setSel]=useState(fmt(oggi));
+  const [modal,setModal]=useState(null);
+
+  useEffect(()=>{ saveData(data); },[data]);
+
+  const upsert=useCallback(sess=>{
+    setData(d=>({...d,sessions:[...d.sessions.filter(s=>s.id!==sess.id),sess].sort((a,b)=>a.date.localeCompare(b.date))}));
+    setSel(sess.date);
+    const dd=pd(sess.date); setAnno(dd.getFullYear()); setMese(dd.getMonth());
+    setModal(null);
+  },[]);
+  const remove=useCallback(id=>{ setData(d=>({...d,sessions:d.sessions.filter(s=>s.id!==id)})); setModal(null); },[]);
+  const saveMeal=useCallback(m=>{ setData(d=>({...d,meals:[...(d.meals||[]).filter(x=>x.id!==m.id),m]})); },[]);
+  const upsertFood=useCallback((nome,profile)=>{
+    setData(d=>{
+      const list=(d.foodHistory||[]).map(f=>typeof f==="string"?{nome:f}:f);
+      const key=nome.trim().toLowerCase();
+      const idx=list.findIndex(f=>String(f.nome||"").toLowerCase()===key);
+      const entry={nome:nome.trim(),...profile};
+      const next=idx>=0?list.map((f,i)=>i===idx?entry:f):[entry,...list].slice(0,120);
+      return {...d,foodHistory:next};
+    });
+  },[]);
+  const updMeal=useCallback((id,f,v)=>{ setData(d=>({...d,meals:(d.meals||[]).map(m=>m.id===id?{...m,[f]:Number(v)||0}:m)})); },[]);
+  const setPassiGiorno=useCallback((key,val)=>{
+    setData(d=>{
+      const passi={...(d.passi||{})};
+      const n=Number(val);
+      if(!n||n<=0) delete passi[key]; else passi[key]=n;
+      return {...d,passi};
+    });
+  },[]);
+  const delMeal=useCallback(id=>{ setData(d=>({...d,meals:(d.meals||[]).filter(m=>m.id!==id)})); },[]);
+
+  const esporta=()=>{
+    const {apiKey,...rs}=data.settings;
+    const blob=new Blob([JSON.stringify({app:"tt",date:new Date().toISOString(),sessions:data.sessions,meals:data.meals||[],foodHistory:data.foodHistory||[],passi:data.passi||{},settings:rs},null,2)],{type:"application/json"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download=`training-${fmt(oggi)}.json`; document.body.appendChild(a); a.click(); a.remove();
+  };
+  const importa=file=>{
+    const r=new FileReader(); r.onload=()=>{
+      try{
+        const p=JSON.parse(r.result);
+        if(!Array.isArray(p.sessions)) throw new Error("formato non valido");
+        if(!window.confirm(`Importare? Sovrascriverà i dati (${p.sessions.length} allenamenti, ${(p.meals||[]).length} pasti).`)) return;
+        setData(d=>{
+          const fh=(p.foodHistory||d.foodHistory||[]).map(f=>typeof f==="string"?{nome:f}:f);
+          return {sessions:p.sessions,meals:p.meals||[],foodHistory:fh,passi:p.passi||d.passi||{},settings:{...DEF_S,...(p.settings||{}),apiKey:d.settings.apiKey}};
+        });
+        setModal(null);
+      }catch(e){ window.alert("Importazione fallita: "+e.message); }
+    }; r.readAsText(file);
+  };
+
+  const navM=dir=>{let m=mese+dir,a=anno;if(m<0){m=11;a--;}if(m>11){m=0;a++;}setMese(m);setAnno(a);};
+  const navG=dir=>{const d=pd(sel);d.setDate(d.getDate()+dir);setSel(fmt(d));setMese(d.getMonth());setAnno(d.getFullYear());};
+  const navL=view==="mese"?()=>navM(-1):view==="cibo"?()=>navG(-1):()=>setAnno(anno-1);
+  const navR=view==="mese"?()=>navM(1):view==="cibo"?()=>navG(1):()=>setAnno(anno+1);
+  const sd=pd(sel);
+  const navLabel=view==="mese"?`${MESI[mese]} ${anno}`
+    :view==="cibo"?`${GIORNI[dow(sd)]} ${sd.getDate()} ${MESI[sd.getMonth()].toLowerCase()}`
+    :anno;
+
+  return <div style={{minHeight:"100vh",background:C.bg,color:C.text,
+    fontFamily:"'Avenir Next','Segoe UI',system-ui,-apple-system,sans-serif",padding:"22px 14px"}}>
+    <div style={{maxWidth:760,margin:"0 auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <h1 style={{margin:0,fontSize:22,fontWeight:800,letterSpacing:-0.3}}>Training Tracker</h1>
+        <div style={{display:"flex",gap:7}}>
+          <Btn onClick={()=>setModal({t:"settings"})} title="Impostazioni">⚙</Btn>
+          <Btn primary onClick={()=>setModal({t:"session",init:{date:sel}})}>+ Aggiungi</Btn>
+        </div>
+      </div>
+      {!data.settings.pesoConfermato&&
+        <div style={{fontSize:13,color:C.amber,margin:"5px 0 2px"}}>Configura il profilo in ⚙ per calorie e macro precisi.</div>}
+      <div style={{display:"flex",gap:7,margin:"13px 0 18px",borderBottom:`1px solid ${C.border}`,paddingBottom:11,flexWrap:"wrap"}}>
+        {[["mese","Mese"],["anno","Anno"],["stats","Statistiche"],["cibo","Cibo"]].map(([k,l])=>
+          <Btn key={k} active={view===k} onClick={()=>setView(k)}>{l}</Btn>)}
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <Btn small onClick={navL}>‹</Btn>
+        <div style={{fontSize:16,fontWeight:700}}>{navLabel}</div>
+        <Btn small onClick={navR}>›</Btn>
+      </div>
+      {view==="mese"&&<>
+        <MonthView anno={anno} mese={mese} sessions={data.sessions} settings={data.settings} passi={data.passi||{}}
+          selected={sel} onSelect={setSel} oggi={oggi}/>
+        <DayDetail dateKey={sel} sessions={data.sessions}
+          onAdd={()=>setModal({t:"session",init:{date:sel}})}
+          onEdit={s=>setModal({t:"session",init:s})}/>
+        <PassiBox dateKey={sel} valore={(data.passi||{})[sel]} peso={data.settings.peso} onSave={setPassiGiorno}/>
+      </>}
+      {view==="anno"&&<YearView anno={anno} sessions={data.sessions}
+        onSelectDay={k=>{setSel(k);const d=pd(k);setMese(d.getMonth());setView("mese");}}/>}
+      {view==="stats"&&<StatsView anno={anno} sessions={data.sessions} passi={data.passi||{}} oggi={oggi}/>}
+      {view==="cibo"&&<FoodView dateKey={sel} meals={data.meals||[]} sessions={data.sessions} settings={data.settings} foodHistory={data.foodHistory||[]} passi={data.passi||{}}
+        onSaveMeal={saveMeal} onUpdateMeal={updMeal} onDeleteMeal={delMeal} onUpsertFood={upsertFood}/>}
+    </div>
+    {modal?.t==="session"&&<SessionModal initial={modal.init} peso={data.settings.peso}
+      onSave={upsert} onDelete={remove} onClose={()=>setModal(null)}/>}
+    {modal?.t==="settings"&&<SettingsModal settings={data.settings}
+      onSave={s=>{setData(d=>({...d,settings:s}));setModal(null);}}
+      onExport={esporta} onImport={importa} onClose={()=>setModal(null)}/>}
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+<script>
+function trasforma(){
+  if(typeof Babel==='undefined'){
+    if(window._babelRetry===undefined) window._babelRetry=0;
+    if(window._babelRetry++>20){
+      document.getElementById('err').style.display='block';
+      document.getElementById('err').textContent='Timeout: Babel non si è caricato dal CDN.\nProva con dati mobili, non WiFi aziendale.';
+      return;
+    }
+    setTimeout(trasforma,250);
+    return;
+  }
+  try{
+    var src=document.getElementById('SRC').textContent;
+    var out=Babel.transform(src,{presets:[["react",{runtime:"classic"}]]}).code;
+    var s=document.createElement('script');s.text=out;document.body.appendChild(s);
+  }catch(e){
+    document.getElementById('err').style.display='block';
+    document.getElementById('err').textContent='Errore Babel: '+e.message+'\nFai screenshot e mandalo in chat.';
+  }
+}
+trasforma();
+</script>
+</body>
+</html>
+
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <style>
 html,body{margin:0;padding:0;background:#0F1013;overscroll-behavior-y:none}
